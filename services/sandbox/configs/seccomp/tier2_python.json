@@ -1,0 +1,144 @@
+{
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "defaultErrnoRet": 1,
+  "comment": "SkillForge Sandbox - Tier 2 Python seccomp profile. Whitelist approach: only explicitly listed syscalls are allowed.",
+  "architectures": [
+    "SCMP_ARCH_X86_64",
+    "SCMP_ARCH_X86",
+    "SCMP_ARCH_AARCH64"
+  ],
+  "syscalls": [
+    {
+      "comment": "Basic I/O operations",
+      "names": [
+        "read", "write", "open", "close", "stat", "fstat", "lstat",
+        "poll", "lseek", "mmap", "mprotect", "munmap", "brk",
+        "pread64", "pwrite64", "readv", "writev",
+        "access", "pipe", "pipe2", "dup", "dup2", "dup3"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "File/directory operations",
+      "names": [
+        "openat", "mkdirat", "newfstatat", "unlinkat", "renameat",
+        "readlinkat", "fchmodat", "faccessat", "fchownat",
+        "getcwd", "chdir", "rename", "mkdir", "rmdir",
+        "creat", "link", "unlink", "symlink", "readlink",
+        "chmod", "fchmod", "chown", "fchown", "lchown",
+        "truncate", "ftruncate", "getdents", "getdents64",
+        "statx", "statfs", "fstatfs"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Memory management",
+      "names": [
+        "mremap", "msync", "mincore", "madvise",
+        "shmget", "shmat", "shmctl", "shmdt",
+        "memfd_create", "membarrier"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Process management (limited)",
+      "names": [
+        "clone", "clone3", "fork", "vfork", "execve", "execveat",
+        "exit", "exit_group", "wait4", "waitid",
+        "getpid", "getppid", "getuid", "geteuid",
+        "getgid", "getegid", "gettid",
+        "set_tid_address", "set_robust_list",
+        "getpgrp", "getpgid", "setpgid",
+        "getgroups", "setsid"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Signal handling",
+      "names": [
+        "rt_sigaction", "rt_sigprocmask", "rt_sigreturn",
+        "rt_sigsuspend", "rt_sigpending", "rt_sigtimedwait",
+        "sigaltstack", "kill", "tgkill"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Timing and scheduling",
+      "names": [
+        "nanosleep", "clock_nanosleep", "clock_gettime",
+        "clock_getres", "gettimeofday", "times",
+        "getitimer", "setitimer", "alarm",
+        "timer_create", "timer_settime", "timer_gettime",
+        "timer_getoverrun", "timer_delete"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "File descriptor management",
+      "names": [
+        "fcntl", "flock", "fsync", "fdatasync",
+        "fadvise64", "fallocate",
+        "ioctl", "umask",
+        "select", "pselect6", "ppoll",
+        "epoll_create", "epoll_create1", "epoll_ctl",
+        "epoll_wait", "epoll_pwait", "epoll_pwait2",
+        "eventfd", "eventfd2",
+        "timerfd_create", "timerfd_settime", "timerfd_gettime"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Threading (needed by Python/numpy)",
+      "names": [
+        "futex", "futex_waitv",
+        "get_robust_list",
+        "sched_yield", "sched_getaffinity",
+        "sched_getparam", "sched_getscheduler",
+        "rseq"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Networking (BLOCKED for Tier 1-2 by network=none, but syscalls allowed for IPC)",
+      "names": [
+        "socket", "connect", "accept", "accept4",
+        "sendto", "recvfrom", "sendmsg", "recvmsg",
+        "shutdown", "bind", "listen",
+        "getsockname", "getpeername",
+        "socketpair", "setsockopt", "getsockopt"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Resource limits and info",
+      "names": [
+        "getrlimit", "setrlimit", "prlimit64",
+        "getrusage", "sysinfo", "uname"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Architecture-specific",
+      "names": [
+        "arch_prctl", "prctl",
+        "getrandom",
+        "close_range",
+        "copy_file_range",
+        "splice", "tee",
+        "sendfile"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Misc (needed by Python runtime)",
+      "names": [
+        "mlock", "munlock",
+        "syslog",
+        "capget",
+        "personality",
+        "inotify_init1", "inotify_add_watch", "inotify_rm_watch"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    }
+  ]
+}

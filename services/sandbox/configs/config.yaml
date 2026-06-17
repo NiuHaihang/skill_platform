@@ -1,0 +1,120 @@
+# SkillForge Sandbox Service Configuration
+# ==========================================
+
+server:
+  host: "0.0.0.0"
+  port: 8194
+  api_key: "${SANDBOX_API_KEY:sk-sandbox-dev-key}"
+  read_timeout_seconds: 300
+  write_timeout_seconds: 300
+  max_request_size_bytes: 52428800  # 50MB
+
+logging:
+  level: "${SANDBOX_LOG_LEVEL:info}"  # debug, info, warn, error
+  format: "json"                      # json, text
+
+# Container pool configuration
+pool:
+  python:
+    image: "skillforge/sandbox-python:latest"
+    min_idle: 3
+    max_total: 20
+    max_uses_per_container: 20        # Destroy after N uses
+    max_age_minutes: 30               # Destroy after N minutes
+    acquire_timeout_seconds: 10
+    health_check_interval_seconds: 30
+    reconcile_interval_seconds: 5
+  javascript:
+    image: "skillforge/sandbox-node:latest"
+    min_idle: 2
+    max_total: 10
+    max_uses_per_container: 20
+    max_age_minutes: 30
+    acquire_timeout_seconds: 10
+    health_check_interval_seconds: 30
+    reconcile_interval_seconds: 5
+
+# Security tier policies
+tiers:
+  tier1:
+    name: "Basic"
+    description: "Math, data transforms, string processing"
+    memory_bytes: 268435456           # 256 MB
+    cpu_count: 1
+    cpu_period: 100000
+    cpu_quota: 100000                 # 1.0 CPU
+    pids_limit: 50
+    timeout_seconds: 30
+    network_disabled: true
+    readonly_rootfs: true
+    tmpfs:
+      "/tmp": "size=64m,noexec,nosuid"
+    allowed_packages:
+      python: ["math", "json", "re", "datetime", "csv", "collections",
+               "itertools", "functools", "decimal", "fractions",
+               "statistics", "string", "textwrap", "hashlib", "base64"]
+      javascript: []  # Built-in modules only
+    seccomp_profile: "configs/seccomp/tier1_python.json"
+
+  tier2:
+    name: "Standard"
+    description: "Data analysis, chart generation, file processing"
+    memory_bytes: 536870912           # 512 MB
+    cpu_count: 1
+    cpu_period: 100000
+    cpu_quota: 100000                 # 1.0 CPU
+    pids_limit: 100
+    timeout_seconds: 120
+    network_disabled: true
+    readonly_rootfs: true
+    tmpfs:
+      "/tmp": "size=128m,noexec,nosuid"
+      "/workspace": "size=268435456"  # 256 MB
+    allowed_packages:
+      python: ["pandas", "numpy", "matplotlib", "seaborn", "openpyxl",
+               "Pillow", "tabulate", "scipy", "scikit-learn"]
+      javascript: ["lodash", "dayjs", "csv-parse", "csv-stringify",
+                    "xlsx", "uuid"]
+    seccomp_profile: "configs/seccomp/tier2_python.json"
+
+  tier3:
+    name: "Advanced"
+    description: "Network access, long-running, custom packages"
+    memory_bytes: 2147483648          # 2 GB
+    cpu_count: 2
+    cpu_period: 100000
+    cpu_quota: 200000                 # 2.0 CPU
+    pids_limit: 200
+    timeout_seconds: 1800             # 30 minutes
+    network_disabled: false           # Network allowed via proxy
+    network_proxy: "http://sandbox-proxy:3128"
+    readonly_rootfs: true
+    tmpfs:
+      "/tmp": "size=256m,noexec,nosuid"
+      "/workspace": "size=1073741824"  # 1 GB
+    allowed_packages:
+      python: ["requests", "beautifulsoup4", "lxml"]
+      javascript: ["axios", "cheerio", "sharp"]
+    seccomp_profile: "configs/seccomp/tier3_python.json"
+
+# Docker connection
+docker:
+  host: "unix:///var/run/docker.sock"
+  api_version: "1.45"
+  tls_verify: false
+
+# Execution defaults
+execution:
+  max_code_size_bytes: 1048576        # 1 MB
+  max_output_size_bytes: 10485760     # 10 MB per file
+  max_output_files: 20
+  max_stdout_bytes: 1048576           # 1 MB
+  max_stderr_bytes: 102400            # 100 KB
+  workspace_base: "/workspace"
+  wrapper_path: "/opt/sandbox/wrapper.py"
+  result_cache_ttl_seconds: 300       # 5 minutes
+
+# Container labels (for cleanup/auditing)
+labels:
+  prefix: "skillforge.sandbox"
+  managed_by: "skillforge-sandbox-service"

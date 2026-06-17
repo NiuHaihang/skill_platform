@@ -1,0 +1,145 @@
+{
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "defaultErrnoRet": 1,
+  "comment": "SkillForge Sandbox - Tier 3 (Advanced) seccomp profile. More permissive — allows network via proxy, extended process management. Used with Firecracker/gVisor for additional isolation.",
+  "architectures": [
+    "SCMP_ARCH_X86_64",
+    "SCMP_ARCH_X86",
+    "SCMP_ARCH_AARCH64"
+  ],
+  "syscalls": [
+    {
+      "comment": "Basic I/O",
+      "names": [
+        "read", "write", "open", "close", "stat", "fstat", "lstat",
+        "poll", "lseek", "mmap", "mprotect", "munmap", "brk",
+        "pread64", "pwrite64", "readv", "writev",
+        "access", "pipe", "pipe2", "dup", "dup2", "dup3"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "File/directory operations (full)",
+      "names": [
+        "openat", "mkdirat", "newfstatat", "unlinkat", "renameat", "renameat2",
+        "readlinkat", "fchmodat", "faccessat", "faccessat2", "fchownat",
+        "futimesat", "utimensat",
+        "getcwd", "chdir", "rename", "mkdir", "rmdir",
+        "creat", "link", "linkat", "unlink", "symlink", "symlinkat",
+        "readlink", "chmod", "fchmod", "chown", "fchown", "lchown",
+        "truncate", "ftruncate", "getdents", "getdents64",
+        "statx", "statfs", "fstatfs",
+        "name_to_handle_at", "open_by_handle_at"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Memory management (extended)",
+      "names": [
+        "mremap", "msync", "mincore", "madvise",
+        "shmget", "shmat", "shmctl", "shmdt",
+        "memfd_create", "membarrier",
+        "mlock", "mlock2", "munlock", "mlockall", "munlockall"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Process management (extended)",
+      "names": [
+        "clone", "clone3", "fork", "vfork", "execve", "execveat",
+        "exit", "exit_group", "wait4", "waitid",
+        "getpid", "getppid", "getuid", "geteuid",
+        "getgid", "getegid", "gettid",
+        "set_tid_address", "set_robust_list",
+        "getpgrp", "getpgid", "setpgid",
+        "getgroups", "setgroups", "setsid",
+        "setreuid", "setregid", "setresuid", "getresuid",
+        "setresgid", "getresgid"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Signal handling",
+      "names": [
+        "rt_sigaction", "rt_sigprocmask", "rt_sigreturn",
+        "rt_sigsuspend", "rt_sigpending", "rt_sigtimedwait",
+        "rt_sigqueueinfo", "sigaltstack", "kill", "tgkill", "tkill"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Timing and scheduling (extended)",
+      "names": [
+        "nanosleep", "clock_nanosleep", "clock_gettime",
+        "clock_getres", "gettimeofday", "times",
+        "getitimer", "setitimer", "alarm",
+        "timer_create", "timer_settime", "timer_gettime",
+        "timer_getoverrun", "timer_delete"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "File descriptor management (extended)",
+      "names": [
+        "fcntl", "flock", "fsync", "fdatasync",
+        "fadvise64", "fallocate",
+        "ioctl", "umask",
+        "select", "pselect6", "ppoll",
+        "epoll_create", "epoll_create1", "epoll_ctl",
+        "epoll_wait", "epoll_pwait", "epoll_pwait2",
+        "eventfd", "eventfd2",
+        "timerfd_create", "timerfd_settime", "timerfd_gettime",
+        "signalfd", "signalfd4"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Threading",
+      "names": [
+        "futex", "futex_waitv",
+        "get_robust_list",
+        "sched_yield", "sched_getaffinity", "sched_setaffinity",
+        "sched_getparam", "sched_getscheduler",
+        "sched_setscheduler", "sched_setparam",
+        "rseq"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Networking (ALLOWED in Tier 3, traffic goes through proxy)",
+      "names": [
+        "socket", "connect", "accept", "accept4",
+        "sendto", "recvfrom", "sendmsg", "recvmsg",
+        "sendmmsg", "recvmmsg",
+        "shutdown", "bind", "listen",
+        "getsockname", "getpeername",
+        "socketpair", "setsockopt", "getsockopt"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Resource limits and info",
+      "names": [
+        "getrlimit", "setrlimit", "prlimit64",
+        "getrusage", "sysinfo", "uname"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Architecture, misc, and inotify",
+      "names": [
+        "arch_prctl", "prctl",
+        "getrandom",
+        "close_range",
+        "copy_file_range",
+        "splice", "tee",
+        "sendfile",
+        "syslog",
+        "capget",
+        "personality",
+        "inotify_init1", "inotify_add_watch", "inotify_rm_watch"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    }
+  ]
+}

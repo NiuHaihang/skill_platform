@@ -1,0 +1,239 @@
+version: "3.9"
+
+# SkillForge Development Infrastructure
+# Usage: docker compose up -d
+
+networks:
+  skillforge_net:
+    driver: bridge
+  sandbox_net:
+    # Isolated network for sandbox containers — no external access
+    driver: bridge
+    internal: false
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+
+services:
+  # ─────────────────────────────────────────────
+  # PostgreSQL 16 with pgvector extension
+  # ─────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: skillforge_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-skillforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-skillforge_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-skillforge}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./services/core/scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - skillforge_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U skillforge"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─────────────────────────────────────────────
+  # Redis 7
+  # ─────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: skillforge_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-skillforge_redis_dev}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - skillforge_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "--pass", "${REDIS_PASSWORD:-skillforge_redis_dev}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─────────────────────────────────────────────
+  # MinIO (S3-compatible object storage)
+  # ─────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: skillforge_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-skillforge_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-skillforge_minio_dev_secret}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web Console
+    volumes:
+      - minio_data:/data
+    networks:
+      - skillforge_net
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # ─────────────────────────────────────────────
+  # Tecnativa Docker Socket Proxy
+  # Restricts sandbox service's access to Docker API.
+  # Only whitelisted operations are allowed.
+  # ─────────────────────────────────────────────
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: skillforge_docker_proxy
+    restart: unless-stopped
+    environment:
+      # Allowed Docker API endpoints (1=allow, 0=deny)
+      CONTAINERS: 1     # List, inspect containers
+      IMAGES: 1         # List images (needed to verify runtime images exist)
+      INFO: 1           # Docker info (for health check)
+      NETWORKS: 0       # Deny network management
+      VOLUMES: 0        # Deny volume management
+      EXEC: 1           # Create and run exec sessions (code execution)
+      POST: 1           # Allow POST requests (create, start, stop, exec)
+      DELETE: 1         # Allow DELETE (rm containers)
+      BUILD: 0          # Deny image builds
+      COMMIT: 0         # Deny commits
+      CONFIGS: 0        # Deny config management
+      DISTRIBUTION: 0   # Deny registry push/pull
+      NODES: 0          # Deny swarm nodes
+      PLUGINS: 0        # Deny plugin management
+      SECRETS: 0        # Deny secrets management
+      SERVICES: 0       # Deny swarm services
+      SESSION: 0        # Deny session management
+      SWARM: 0          # Deny swarm management
+      SYSTEM: 0         # Deny system events
+      TASKS: 0          # Deny swarm tasks
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - sandbox_net
+    # DO NOT expose port to public — only sandbox service can access
+    # Port 2375 is only accessible within sandbox_net
+    ports: []
+
+  # ─────────────────────────────────────────────
+  # Sandbox Service (Go)
+  # Build and run separately: see services/sandbox/
+  # ─────────────────────────────────────────────
+  sandbox:
+    build:
+      context: ./services/sandbox
+      dockerfile: docker/Dockerfile
+      target: development
+    container_name: skillforge_sandbox
+    restart: unless-stopped
+    environment:
+      SANDBOX_PORT: 8194
+      SANDBOX_API_KEY: ${SANDBOX_API_KEY:-sk-sandbox-dev-key-change-in-prod}
+      SANDBOX_LOG_LEVEL: debug
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+      SANDBOX_POOL_PYTHON_MIN_IDLE: 2
+      SANDBOX_POOL_PYTHON_MAX_TOTAL: 5
+      SANDBOX_POOL_NODE_MIN_IDLE: 1
+      SANDBOX_POOL_NODE_MAX_TOTAL: 3
+      SANDBOX_RUNTIME_PYTHON_IMAGE: skillforge/sandbox-python:latest
+      SANDBOX_RUNTIME_NODE_IMAGE: skillforge/sandbox-node:latest
+    ports:
+      - "8194:8194"
+    networks:
+      - skillforge_net  # Core service communicates through this
+      - sandbox_net     # Sandbox talks to Docker proxy through this
+    depends_on:
+      docker-socket-proxy:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8194/v1/sandbox/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ─────────────────────────────────────────────
+  # Core Service (NestJS)
+  # ─────────────────────────────────────────────
+  core:
+    build:
+      context: ./services/core
+      dockerfile: Dockerfile
+      target: development
+    container_name: skillforge_core
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      DATABASE_URL: postgresql://${POSTGRES_USER:-skillforge}:${POSTGRES_PASSWORD:-skillforge_dev_password}@postgres:5432/${POSTGRES_DB:-skillforge}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-skillforge_redis_dev}@redis:6379
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-in-production-minimum-32-chars}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-dev-refresh-secret-change-in-production}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
+      SANDBOX_API_URL: http://sandbox:8194
+      SANDBOX_API_KEY: ${SANDBOX_API_KEY:-sk-sandbox-dev-key-change-in-prod}
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_USE_SSL: "false"
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-skillforge_minio}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-skillforge_minio_dev_secret}
+      MINIO_BUCKET: skillforge-assets
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./services/core:/app
+      - /app/node_modules  # Anonymous volume to prevent overwriting
+    networks:
+      - skillforge_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      sandbox:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ─────────────────────────────────────────────
+  # Frontend (Next.js 15) — Dev only
+  # ─────────────────────────────────────────────
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+      target: development
+    container_name: skillforge_web
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+      NEXT_PUBLIC_WS_URL: ws://localhost:3001
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./apps/web:/app
+      - /app/node_modules
+      - /app/.next
+    networks:
+      - skillforge_net
+    depends_on:
+      core:
+        condition: service_healthy

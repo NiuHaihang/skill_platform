@@ -1,0 +1,28 @@
+{
+  "name": "skillforge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SkillForge — AI Agent Platform with Skill Marketplace",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "format": "turbo run format",
+    "db:migrate": "pnpm --filter @skillforge/core typeorm migration:run",
+    "db:generate": "pnpm --filter @skillforge/core typeorm migration:generate",
+    "clean": "turbo run clean && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0",
+    "prettier": "^3.3.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.4.0"
+  }
+}

@@ -1,0 +1,99 @@
+{
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "defaultErrnoRet": 1,
+  "comment": "SkillForge Sandbox - Tier 1 (Basic) Python seccomp profile. Most restrictive — no networking syscalls, minimal filesystem ops.",
+  "architectures": [
+    "SCMP_ARCH_X86_64",
+    "SCMP_ARCH_X86",
+    "SCMP_ARCH_AARCH64"
+  ],
+  "syscalls": [
+    {
+      "comment": "Basic I/O (read-only emphasis)",
+      "names": [
+        "read", "write", "close", "fstat", "lstat", "stat",
+        "lseek", "mmap", "mprotect", "munmap", "brk",
+        "pread64", "pwrite64", "readv", "writev",
+        "access", "pipe", "pipe2", "dup", "dup2", "dup3",
+        "poll"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Limited file operations (read-focused)",
+      "names": [
+        "openat", "newfstatat", "readlinkat", "faccessat",
+        "getcwd", "getdents", "getdents64", "statx",
+        "statfs", "fstatfs"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Memory management",
+      "names": [
+        "mremap", "madvise", "memfd_create"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Process management (minimal)",
+      "names": [
+        "clone", "clone3", "execve", "exit", "exit_group",
+        "wait4", "getpid", "getppid", "getuid", "geteuid",
+        "getgid", "getegid", "gettid",
+        "set_tid_address", "set_robust_list"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Signal handling",
+      "names": [
+        "rt_sigaction", "rt_sigprocmask", "rt_sigreturn",
+        "sigaltstack"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Timing (read-only)",
+      "names": [
+        "nanosleep", "clock_nanosleep", "clock_gettime",
+        "clock_getres", "gettimeofday", "times"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "File descriptor management",
+      "names": [
+        "fcntl", "ioctl", "umask",
+        "select", "pselect6", "ppoll",
+        "epoll_create1", "epoll_ctl", "epoll_wait", "epoll_pwait",
+        "eventfd2"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Threading (needed by Python)",
+      "names": [
+        "futex", "futex_waitv", "sched_yield",
+        "sched_getaffinity", "rseq"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Resource info (read-only)",
+      "names": [
+        "getrlimit", "prlimit64", "getrusage",
+        "sysinfo", "uname"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Architecture-specific",
+      "names": [
+        "arch_prctl", "prctl", "getrandom",
+        "close_range"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    }
+  ]
+}
