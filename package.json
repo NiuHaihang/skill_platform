@@ -1,6 +1,7 @@
 {
   "name": "skillforge",
   "version": "0.1.0",
+  "packageManager": "pnpm@11.7.0",
   "private": true,
   "description": "SkillForge — AI Agent Platform with Skill Marketplace",
   "engines": {
@@ -13,8 +14,9 @@
     "test": "turbo run test",
     "lint": "turbo run lint",
     "format": "turbo run format",
-    "db:migrate": "pnpm --filter @skillforge/core typeorm migration:run",
-    "db:generate": "pnpm --filter @skillforge/core typeorm migration:generate",
+    "db:migrate": "pnpm --filter @skillforge/core migration:run",
+    "db:generate": "pnpm --filter @skillforge/core migration:generate",
+    "db:revert": "pnpm --filter @skillforge/core migration:revert",
     "clean": "turbo run clean && rm -rf node_modules"
   },
   "devDependencies": {

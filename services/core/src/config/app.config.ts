@@ -45,6 +45,8 @@ export default registerAs('app', () => ({
     anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
     groqApiKey: process.env.GROQ_API_KEY || '',
     deepseekApiKey: process.env.DEEPSEEK_API_KEY || '',
+    deepseekBaseUrl: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1',
+    ollamaBaseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1',
     defaultModel: process.env.LLM_DEFAULT_MODEL || 'gpt-4o',
     routerModel: process.env.LLM_ROUTER_MODEL || 'gpt-4o-mini',
   },
