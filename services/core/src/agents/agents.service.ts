@@ -73,7 +73,24 @@ export class AgentsService {
   async update(id: string, dto: Partial<CreateAgentDto>, userId: string): Promise<Agent> {
     const agent = await this.findByIdOrThrow(id);
     if (agent.ownerId !== userId) throw new ForbiddenException('Not your agent');
-    Object.assign(agent, dto);
+
+    const { skillIds, modelProvider, modelName, modelConfig, ...rest } = dto;
+
+    // Apply scalar fields.
+    Object.assign(agent, rest);
+
+    if (modelName)   agent.modelName     = modelName;
+    if (modelConfig) agent.modelConfig   = modelConfig;
+    // Re-infer provider if modelName changed.
+    agent.modelProvider = modelProvider || this.inferProvider(agent.modelName);
+
+    // Replace skill associations if skillIds provided.
+    if (skillIds !== undefined) {
+      agent.skills = skillIds.length
+        ? await this.skillRepo.find({ where: { id: In(skillIds) } })
+        : [];
+    }
+
     return this.agentRepo.save(agent);
   }
 

@@ -105,6 +105,13 @@ export default function AgentsPage() {
                 >
                   <MessageSquare className="w-3.5 h-3.5" /> Chat
                 </Link>
+                <Link
+                  href={`/dashboard/agents/${agent.id}/edit`}
+                  className="btn-ghost px-3 py-2 text-muted-foreground hover:text-foreground"
+                  title="Edit agent"
+                >
+                  <Settings2 className="w-3.5 h-3.5" />
+                </Link>
                 <button
                   onClick={() => {
                     if (confirm(`Delete "${agent.name}"?`)) {
