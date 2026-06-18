@@ -61,7 +61,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
         {/* User section */}
         <div className="px-3 pb-4 space-y-1 border-t border-border pt-4">
-          <Link href="/dashboard/settings" className="sidebar-item">
+          <Link
+            href="/dashboard/settings"
+            className={cn('sidebar-item', pathname === '/dashboard/settings' && 'active')}
+          >
             <Settings className="w-4 h-4" />
             Settings
           </Link>

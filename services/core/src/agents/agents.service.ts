@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, In } from 'typeorm';
 import { Agent } from './agent.entity';
 import { Skill } from '../skills/skill.entity';
 import { CreateAgentDto } from './dto/create-agent.dto';
@@ -10,16 +10,43 @@ export class AgentsService {
   constructor(
     @InjectRepository(Agent)
     private readonly agentRepo: Repository<Agent>,
+    @InjectRepository(Skill)
+    private readonly skillRepo: Repository<Skill>,
   ) {}
 
   async create(dto: CreateAgentDto, ownerId: string): Promise<Agent> {
+    const { skillIds, ...rest } = dto;
+
+    // Auto-infer modelProvider from modelName if not provided.
+    const modelProvider = rest.modelProvider || this.inferProvider(rest.modelName);
+
     const agent = this.agentRepo.create({
-      ...dto,
+      ...rest,
+      modelProvider,
       ownerId,
       skills: [],
-      modelConfig: dto.modelConfig || {},
+      modelConfig: rest.modelConfig || {},
     });
-    return this.agentRepo.save(agent);
+    const saved = await this.agentRepo.save(agent);
+
+    // Attach requested skills.
+    if (skillIds?.length) {
+      const skills = await this.skillRepo.find({ where: { id: In(skillIds) } });
+      saved.skills = skills;
+      await this.agentRepo.save(saved);
+    }
+
+    return saved;
+  }
+
+  /** Infer provider name from model name prefix. */
+  private inferProvider(modelName: string): string {
+    if (modelName.startsWith('gpt-') || /^o[134]/.test(modelName)) return 'openai';
+    if (modelName.startsWith('claude-')) return 'anthropic';
+    if (modelName.startsWith('deepseek-')) return 'deepseek';
+    if (modelName.startsWith('llama') || modelName.startsWith('mixtral') || modelName.startsWith('gemma')) return 'groq';
+    if (modelName.startsWith('ollama/') || modelName.includes(':')) return 'ollama';
+    return 'openai';
   }
 
   async findAllByOwner(ownerId: string): Promise<Agent[]> {
