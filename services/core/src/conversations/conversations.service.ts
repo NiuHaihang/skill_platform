@@ -10,7 +10,7 @@ import { SandboxService } from '../sandbox/sandbox.service';
 import { Agent } from '../agents/agent.entity';
 
 export type ConversationSSEEvent =
-  | { event: 'message_start'; data: { messageId: string } }
+  | { event: 'message_start'; data: { messageId: string; role: 'user' | 'assistant' } }
   | { event: 'content_delta'; data: { delta: string } }
   | { event: 'tool_use'; data: { toolCallId: string; skillSlug: string; language: string } }
   | { event: 'tool_result'; data: { toolCallId: string; stdout: string; stderr: string; exitCode: number } }
@@ -89,7 +89,7 @@ export class ConversationsService {
 
     // 1. Save user message.
     const userMessage = await this.saveMessage(conversationId, 'user', userContent);
-    yield { event: 'message_start', data: { messageId: userMessage.id } };
+    yield { event: 'message_start', data: { messageId: userMessage.id, role: 'user' } };
 
     try {
       // 2. Load message history and build LLM messages.
@@ -115,7 +115,7 @@ export class ConversationsService {
       let totalUsage = { promptTokens: 0, completionTokens: 0 };
       const assistantMessageId = await this.generateMessageId();
 
-      yield { event: 'message_start', data: { messageId: assistantMessageId } };
+      yield { event: 'message_start', data: { messageId: assistantMessageId, role: 'assistant' } };
 
       for await (const chunk of this.llmGateway.stream({
         model: agent.modelName,
@@ -151,10 +151,26 @@ export class ConversationsService {
       }
 
       // 7. Handle tool calls (Skill execution).
+      const toolResults = new Map<string, { stdout: string; stderr: string; exitCode: number }>();
+
+      let savedToolMessageCount = 0;
+
       if (pendingToolCalls.length > 0) {
         for (const toolCall of pendingToolCalls) {
-          const skillSlug = toolCall.function.name;
-          const args = JSON.parse(toolCall.function.arguments || '{}');
+          const skillSlug = toolCall.function.name.replace(/_/g, '-');
+
+          let args: { language?: string; files?: Record<string, string> };
+          try {
+            args = JSON.parse(toolCall.function.arguments || '{}');
+          } catch {
+            const failure = { stdout: '', stderr: 'Invalid tool arguments', exitCode: 1 };
+            toolResults.set(toolCall.id, failure);
+            yield {
+              event: 'tool_result',
+              data: { toolCallId: toolCall.id, ...failure },
+            };
+            continue;
+          }
 
           yield {
             event: 'tool_use',
@@ -168,9 +184,11 @@ export class ConversationsService {
           // Load L2 spec and extract executable code.
           const skillFull = await this.skillsService.findBySlugL2(skillSlug);
           if (!skillFull?.skillMd) {
+            const failure = { stdout: '', stderr: `Skill ${skillSlug} not found`, exitCode: 1 };
+            toolResults.set(toolCall.id, failure);
             yield {
               event: 'tool_result',
-              data: { toolCallId: toolCall.id, stdout: '', stderr: `Skill ${skillSlug} not found`, exitCode: 1 },
+              data: { toolCallId: toolCall.id, ...failure },
             };
             continue;
           }
@@ -179,10 +197,16 @@ export class ConversationsService {
           const tier = this.determineTier(skillFull);
 
           const execResult = await this.sandboxService.execute({
-            language: args.language || 'python',
+            language: (args.language || 'python') as 'python' | 'javascript',
             code,
             tier,
             files: args.files,
+          });
+
+          toolResults.set(toolCall.id, {
+            stdout: execResult.stdout,
+            stderr: execResult.stderr,
+            exitCode: execResult.exitCode,
           });
 
           yield {
@@ -195,32 +219,42 @@ export class ConversationsService {
             },
           };
 
-          // Save tool result message.
-          await this.saveMessage(conversationId, 'tool', execResult.stdout || execResult.stderr, {
+          const toolContent = [execResult.stdout, execResult.stderr].filter(Boolean).join('\n');
+          await this.saveMessage(conversationId, 'tool', toolContent, {
             toolCallId: toolCall.id,
           });
+          savedToolMessageCount++;
         }
 
-        // Get final response after tool results.
-        const finalResponse = await this.llmGateway.complete({
+        // Get final response after tool results via streaming.
+        for await (const chunk of this.llmGateway.stream({
           model: agent.modelName,
           messages: [
             ...llmMessages,
             { role: 'assistant', content: fullContent },
-            ...pendingToolCalls.map((tc) => ({
-              role: 'tool' as const,
-              content: `Executed ${tc.function.name}`,
-              toolCallId: tc.id,
-            })),
+            ...pendingToolCalls.map((tc) => {
+              const result = toolResults.get(tc.id);
+              return {
+                role: 'tool' as const,
+                content: result
+                  ? JSON.stringify({ stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode })
+                  : 'Tool execution failed',
+                toolCallId: tc.id,
+              };
+            }),
           ],
           temperature: agent.modelConfig.temperature,
           maxTokens: agent.modelConfig.maxTokens,
-        });
-
-        // Stream the final content.
-        if (finalResponse.content) {
-          yield { event: 'content_delta', data: { delta: finalResponse.content } };
-          fullContent += finalResponse.content;
+          stream: true,
+        })) {
+          if (chunk.delta) {
+            yield { event: 'content_delta', data: { delta: chunk.delta } };
+            fullContent += chunk.delta;
+          }
+          if (chunk.done && chunk.usage) {
+            totalUsage.promptTokens += chunk.usage.promptTokens;
+            totalUsage.completionTokens += chunk.usage.completionTokens;
+          }
         }
       }
 
@@ -239,7 +273,7 @@ export class ConversationsService {
 
       // 9. Update conversation stats.
       await this.conversationRepo.update(conversationId, {
-        messageCount: () => 'message_count + 2',
+        messageCount: () => `message_count + ${2 + savedToolMessageCount}`,
         totalTokens: () => `total_tokens + ${totalUsage.promptTokens + totalUsage.completionTokens}`,
         lastMessageAt: new Date(),
       });
@@ -283,7 +317,7 @@ export class ConversationsService {
     return skillsL1.map((skill) => ({
       type: 'function',
       function: {
-        name: skill.slug,
+        name: skill.slug.replace(/-/g, '_'),
         description: skill.description,
         parameters: {
           type: 'object',
