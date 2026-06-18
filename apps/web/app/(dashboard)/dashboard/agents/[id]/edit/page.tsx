@@ -3,10 +3,10 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Bot, ChevronLeft, Loader2, Save, Zap, X, Plus, Trash2,
+  Bot, ChevronLeft, Loader2, Save, Zap, X, Plus,
 } from 'lucide-react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import api from '@/lib/api';
 import { cn } from '@/lib/utils';
 import toast from 'react-hot-toast';
@@ -20,12 +20,9 @@ const MODEL_OPTIONS = [
   { value: 'llama-3.1-70b-versatile',      label: 'Llama 3.1 70B',       provider: 'Groq' },
 ];
 
-interface PageProps {
-  params: { id: string };
-}
-
-export default function EditAgentPage({ params }: PageProps) {
-  const { id } = params;
+export default function EditAgentPage() {
+  const params = useParams();
+  const id = params.id as string;
   const router = useRouter();
   const qc = useQueryClient();
 
