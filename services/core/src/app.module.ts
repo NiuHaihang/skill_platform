@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
+import { join } from 'path';
 
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
@@ -23,7 +24,11 @@ import appConfig from './config/app.config';
     ConfigModule.forRoot({
       isGlobal: true,
       load: [appConfig],
-      envFilePath: ['.env.local', '.env'],
+      // __dirname = services/core/src — go up 3 levels to reach the monorepo root
+      envFilePath: [
+        join(__dirname, '..', '..', '..', '.env.local'),
+        join(__dirname, '..', '..', '..', '.env'),
+      ],
     }),
 
     // ── Structured Logging (Pino) ────────────────────────────────────────
