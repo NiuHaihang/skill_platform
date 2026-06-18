@@ -287,8 +287,53 @@ export class ConversationsService {
       };
     } catch (error: any) {
       this.logger.error('Error processing message', { error: error.message, conversationId });
-      yield { event: 'error', data: { message: error.message || 'An error occurred' } };
+      yield { event: 'error', data: { message: this.toUserFriendlyError(error) } };
     }
+  }
+
+  /** Translate raw/technical errors into user-friendly messages. */
+  private toUserFriendlyError(error: any): string {
+    const msg: string = error?.message ?? '';
+    const status: number = error?.response?.status ?? error?.status ?? 0;
+    const data = error?.response?.data;
+
+    // LLM provider API key / auth errors
+    if (status === 401 || msg.includes('401') || msg.toLowerCase().includes('invalid api key') || msg.toLowerCase().includes('unauthorized')) {
+      return '❌ AI 模型 API Key 无效或未配置。请在 .env.local 中填入正确的 API Key，然后重启服务。';
+    }
+
+    // Rate limit
+    if (status === 429 || msg.includes('429') || msg.toLowerCase().includes('rate limit') || msg.toLowerCase().includes('too many requests')) {
+      return '⚠️ AI 模型请求频率超限（Rate Limit），请稍等几秒后重试。';
+    }
+
+    // Quota / billing
+    if (status === 402 || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('billing') || msg.toLowerCase().includes('insufficient_quota')) {
+      return '💳 API 额度已用完，请检查你的账户余额或升级套餐。';
+    }
+
+    // Model not found
+    if (status === 404 || msg.toLowerCase().includes('model') && msg.toLowerCase().includes('not found')) {
+      return '🤖 指定的 AI 模型不存在，请在 Agent 设置中检查模型名称是否正确。';
+    }
+
+    // Context length
+    if (msg.toLowerCase().includes('context') && msg.toLowerCase().includes('length') || msg.toLowerCase().includes('maximum context')) {
+      return '📄 消息超出模型最大上下文长度，请缩短对话历史或减少消息长度。';
+    }
+
+    // Network / timeout
+    if (msg.toLowerCase().includes('timeout') || msg.toLowerCase().includes('econnrefused') || msg.toLowerCase().includes('network')) {
+      return '🌐 网络请求超时，请检查网络连接后重试。';
+    }
+
+    // Ollama not running
+    if (msg.toLowerCase().includes('econnrefused') && msg.includes('11434')) {
+      return '🦙 Ollama 服务未启动，请运行 `ollama serve` 后重试。';
+    }
+
+    // Generic fallback — hide raw technical message
+    return '😕 对话处理失败，请稍后重试。如果问题持续存在，请检查服务器日志。';
   }
 
   // ─────────────────────────────────────────────

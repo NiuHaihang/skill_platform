@@ -50,7 +50,7 @@ packages/sdk          → Skill development SDK
 | Web (Next.js) | 3000  | Frontend                  |
 | Core (NestJS) | 3001  | REST API + SSE            |
 | Sandbox (Go)  | 8194  | Code execution service    |
-| PostgreSQL    | 5432  | Primary database          |
+| PostgreSQL    | **5433** | Primary database (Docker) — 避免与本机 PostgreSQL 冲突 |
 | Redis         | 6379  | Cache + session store     |
 | MinIO S3 API  | 9000  | Object storage            |
 | MinIO Console | 9001  | MinIO web UI              |
@@ -86,15 +86,22 @@ packages/sdk          → Skill development SDK
 | Auth (JWT + Refresh)          | ✅ 完成              | `services/core/src/auth/`                      |
 | Users module                  | ✅ 完成              | `services/core/src/users/`                     |
 | Skills CRUD                   | ✅ 完成              | `services/core/src/skills/`                    |
-| Agents module                 | ✅ 完成              | `services/core/src/agents/`                    |
+| Agents module                 | ✅ 完成（含 skillIds 创建时关联）| `services/core/src/agents/`         |
 | Conversations module          | ✅ 完成              | `services/core/src/conversations/`             |
 | Marketplace module            | ✅ 完成              | `services/core/src/marketplace/`               |
-| LLM Gateway                   | ✅ 骨架完成          | `services/core/src/llm-gateway/`               |
+| LLM Gateway                   | ✅ 完成（OpenAI · Anthropic · Groq · DeepSeek · Ollama）| `services/core/src/llm-gateway/` |
 | Skill Generator               | 🔨 骨架完成（待接 LLM）| `services/core/src/skill-generator/`          |
 | Sandbox executor.go           | 🔨 骨架完成（待修复竞态）| `services/sandbox/internal/executor/`        |
 | Sandbox pool.go               | 🔨 骨架完成（待修复竞态）| `services/sandbox/internal/pool/`            |
 | Sandbox API handler           | 🔨 骨架完成          | `services/sandbox/internal/api/`               |
-| Frontend (Next.js)            | 🔨 进行中            | `apps/web/`                                    |
+| Frontend — Auth pages         | ✅ 完成              | `apps/web/app/(auth)/`                         |
+| Frontend — Dashboard          | ✅ 完成              | `apps/web/app/(dashboard)/dashboard/`          |
+| Frontend — My Agents          | ✅ 完成              | `apps/web/app/(dashboard)/dashboard/agents/`   |
+| Frontend — Create Agent       | ✅ 完成              | `apps/web/app/(dashboard)/dashboard/agents/new/`|
+| Frontend — My Skills          | ✅ 完成              | `apps/web/app/(dashboard)/dashboard/skills/`   |
+| Frontend — Settings & Theme   | ✅ 完成（全局主题持久化）| `apps/web/app/(dashboard)/dashboard/settings/`|
+| Frontend — Chat (SSE)         | ✅ 完成              | `apps/web/app/(dashboard)/dashboard/chat/`     |
+| Frontend — Marketplace        | ✅ 完成              | `apps/web/app/marketplace/`                    |
 
 ---
 
@@ -139,11 +146,14 @@ ANTHROPIC_API_KEY=sk-ant-...
 ### 3. Start Infrastructure
 
 ```bash
-# Start PostgreSQL 16, Redis 7, MinIO, Docker Socket Proxy
+# Start PostgreSQL 16 (mapped to :5433), Redis 7, MinIO, Docker Socket Proxy
+# ⚠️  Port 5433 is used to avoid conflicts with a local PostgreSQL installation.
+#    If you don't have a local PostgreSQL, you can change back to 5432 in docker-compose.yml
+#    and update DATABASE_URL in .env.local accordingly.
 docker compose up -d postgres redis minio docker-socket-proxy
 
-# Wait for services to be healthy, then run DB migrations
-pnpm db:migrate
+# Tables are created automatically via TypeORM synchronize on first startup.
+# No manual migration step needed for development.
 ```
 
 ### 4. Start Services

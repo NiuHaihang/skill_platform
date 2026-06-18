@@ -11,11 +11,50 @@ import { cn, timeAgo } from '@/lib/utils';
 import Cookies from 'js-cookie';
 import toast from 'react-hot-toast';
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+
+/** Fetch wrapper that automatically refreshes the access token on 401. */
+async function fetchWithAuth(url: string, init: RequestInit): Promise<Response> {
+  const token = Cookies.get('access_token');
+  const res = await fetch(url, {
+    ...init,
+    headers: { ...init.headers, Authorization: `Bearer ${token}` },
+  });
+
+  if (res.status !== 401) return res;
+
+  // Try to refresh the token.
+  const refreshToken = Cookies.get('refresh_token');
+  if (!refreshToken) {
+    window.location.href = '/login';
+    return res;
+  }
+
+  try {
+    const { data } = await api.post('/v1/auth/refresh', { refreshToken });
+    Cookies.set('access_token', data.accessToken, {
+      expires: 1 / 96,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+    });
+    // Retry original request with new token.
+    return fetch(url, {
+      ...init,
+      headers: { ...init.headers, Authorization: `Bearer ${data.accessToken}` },
+    });
+  } catch {
+    Cookies.remove('access_token');
+    Cookies.remove('refresh_token');
+    window.location.href = '/login';
+    return res;
+  }
+}
+
 // ─── Types ────────────────────────────────────────────────────────
 
 interface ChatMessage {
   id: string;
-  role: 'user' | 'assistant' | 'tool';
+  role: 'user' | 'assistant' | 'tool' | 'error';
   content: string;
   createdAt: string;
   toolCalls?: any[];
@@ -101,20 +140,25 @@ function ChatContent() {
       }
 
       // SSE streaming via fetch (EventSource doesn't support POST).
-      const token = Cookies.get('access_token');
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api'}/v1/conversations/${convId}/messages`,
+      const response = await fetchWithAuth(
+        `${API_BASE}/v1/conversations/${convId}/messages`,
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ content: userMsg }),
         },
       );
 
-      if (!response.ok) throw new Error('Failed to send message');
+      if (!response.ok) {
+        // Try to read error body for a useful message.
+        let errMsg = `Server error (${response.status})`;
+        try {
+          const errBody = await response.json();
+          errMsg = errBody.message || errMsg;
+          if (Array.isArray(errMsg)) errMsg = errMsg.join('; ');
+        } catch {}
+        throw new Error(errMsg);
+      }
 
       const reader = response.body!.getReader();
       const decoder = new TextDecoder();
@@ -154,7 +198,18 @@ function ChatContent() {
                 setMessages((prev) => [...prev, finalMsg]);
                 setStreamingContent('');
               } else if (eventType === 'error') {
-                toast.error(data.message);
+                const errText = typeof data.message === 'string' ? data.message : '对话处理失败，请稍后重试。';
+                // Render error as a dedicated error bubble — no toast spam.
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: `err-${Date.now()}`,
+                    role: 'error' as const,
+                    content: errText,
+                    createdAt: new Date().toISOString(),
+                  },
+                ]);
+                setStreamingContent('');
               }
             } catch {
               // Skip malformed SSE data.
@@ -163,8 +218,23 @@ function ChatContent() {
         }
       }
     } catch (err: any) {
-      toast.error(err.message || 'Failed to send message');
+      const isNetworkError = err instanceof TypeError && err.message === 'Failed to fetch';
+      const friendlyMsg = isNetworkError
+        ? '🌐 无法连接到服务器，请确认后端服务是否在 3001 端口正常运行。'
+        : (err.message || '😕 发送失败，请稍后重试。');
+      // Inject error bubble instead of toast.
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `err-${Date.now()}`,
+          role: 'error' as const,
+          content: friendlyMsg,
+          createdAt: new Date().toISOString(),
+        },
+      ]);
+      // Remove the optimistic user message on hard failure.
       setMessages((prev) => prev.filter((m) => m.id !== tempUserMsg.id));
+      setStreamingContent('');
     } finally {
       setIsStreaming(false);
       setActiveToolCall(null);
@@ -311,6 +381,24 @@ function ChatContent() {
 
 function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
+  const isError = message.role === 'error';
+
+  // ── Error bubble ────────────────────────────────────────────────
+  if (isError) {
+    return (
+      <div className="flex gap-3">
+        <div className="w-8 h-8 rounded-full bg-red-500/20 border border-red-500/30 flex items-center justify-center flex-shrink-0 mt-0.5 text-base">
+          ⚠️
+        </div>
+        <div className="max-w-[85%] px-4 py-3 rounded-2xl rounded-tl-sm bg-red-500/10 border border-red-500/20 text-sm">
+          <p className="text-red-300 font-medium text-xs mb-1">系统提示</p>
+          <p className="text-red-200 leading-relaxed whitespace-pre-wrap">{message.content}</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Normal bubble ────────────────────────────────────────────────
   return (
     <div className={cn('flex gap-3', isUser && 'flex-row-reverse')}>
       {/* Avatar */}
