@@ -68,9 +68,9 @@ export class SkillsService {
       category: dto.category,
       tags: dto.tags || [],
       authorId,
-      status: 'draft',
+      status: dto.isPublic ? 'published' : 'draft',
       metadataJson: parsedMetadata,
-      skillMd: dto.skillMd,
+      skillMd: dto.skillMd || undefined,
       version: '1.0.0',
     });
 

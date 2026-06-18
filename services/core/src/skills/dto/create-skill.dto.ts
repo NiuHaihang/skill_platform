@@ -1,5 +1,5 @@
 import {
-  IsString, IsNotEmpty, IsOptional, IsArray, IsEnum, MaxLength,
+  IsString, IsNotEmpty, IsOptional, IsArray, IsEnum, IsBoolean, MaxLength,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { SkillCategory } from '../skill.entity';
@@ -31,4 +31,9 @@ export class CreateSkillDto {
   @IsOptional()
   @IsString()
   skillMd?: string;
+
+  @ApiPropertyOptional({ description: 'Publish to marketplace immediately', default: false })
+  @IsOptional()
+  @IsBoolean()
+  isPublic?: boolean;
 }

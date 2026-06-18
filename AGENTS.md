@@ -102,6 +102,29 @@
 - Axios（HTTP 请求）
 - SSE（对话流式响应）
 
+**⚠️ 前后端 DTO 契约规则（必须严格遵守）**：
+> NestJS 后端全局启用了 `forbidNonWhitelisted: true`，任何未在后端 DTO 中声明的字段都会导致 400 错误。
+>
+> **前端向后端 POST / PUT / PATCH 发送新字段前，必须先确认对应后端 DTO 已声明该字段。**
+>
+> 操作流程：
+> 1. 找到对应 DTO 文件（`services/core/src/<module>/dto/<action>-<entity>.dto.ts`）
+> 2. 确认字段已用 `@IsOptional()` / `@IsString()` 等装饰器声明
+> 3. 如字段缺失，先修改 DTO 并等待 NestJS 热重载，再修改前端
+>
+> **已知 DTO 位置速查**：
+> | 接口 | DTO 文件 |
+> |------|----------|
+> | `POST /agents` | `agents/dto/create-agent.dto.ts` |
+> | `PUT/PATCH /agents/:id` | `agents/dto/create-agent.dto.ts` (Partial) |
+> | `POST /skills` | `skills/dto/create-skill.dto.ts` |
+> | `PUT/PATCH /skills/:id` | `skills/dto/update-skill.dto.ts` |
+> | `POST /auth/register` | `auth/dto/register.dto.ts` |
+> | `POST /auth/login` | `auth/dto/login.dto.ts` |
+> | `POST /conversations` | `conversations.controller.ts` inline |
+> | `POST /conversations/:id/messages` | `conversations.controller.ts` inline |
+> | `PATCH /users/me` | `users.controller.ts` inline |
+
 **设计要求**：
 - 暗色主题为主，玻璃态（glassmorphism）风格
 - 流畅的微动效和过渡动画
@@ -188,6 +211,12 @@
 
 3. **切换 Agent** 时，简要说明上下文传递需求。
 
+4. **前后端接口变更规则**（所有涉及 API 调用的 Agent 必须遵守）：
+   - 前端新增 POST/PUT/PATCH 请求字段前，**必须先检查并更新后端对应 DTO**
+   - 后端 DTO 删除/重命名字段前，**必须同步更新前端所有调用处**
+   - 背景：后端全局启用 `forbidNonWhitelisted: true`，未声明字段直接返回 400
+   - DTO 文件位置：`services/core/src/<module>/dto/`
+
 ---
 
 ## 当前已完成模块
@@ -200,6 +229,13 @@
 | Sandbox pool.go | ✅ 骨架完成（待修复竞态）| `services/sandbox/internal/pool/` |
 | Sandbox API handler | ✅ 骨架完成 | `services/sandbox/internal/api/` |
 | skill-generator.service.ts | ✅ 骨架完成（待接真实 LLM）| `services/core/src/skill-generator/` |
+| 用户注册/登录（JWT + RefreshToken） | ✅ 完成 | `services/core/src/auth/` |
+| Agent CRUD | ✅ 完成 | `services/core/src/agents/` |
+| Skill CRUD + 上传（含 zip 包）| ✅ 完成 | `services/core/src/skills/` + `apps/web/.../skills/` |
+| Skill AI 生成 | ✅ 骨架完成（待接真实 LLM）| `services/core/src/skill-generator/` |
+| Agent 对话（SSE 流式）| ✅ 完成 | `services/core/src/conversations/` |
+| 前端 Dashboard（含 Chat/Agents/Skills/Settings）| ✅ 完成 | `apps/web/app/(dashboard)/` |
+| 错误友好提示（前端 + 后端翻译）| ✅ 完成 | `conversations.service.ts` + `chat/page.tsx` |
 
 ---
 
