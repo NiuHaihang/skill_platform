@@ -129,8 +129,11 @@ export class ConversationsService {
         stream: true,
       })) {
         if (chunk.delta) {
-          fullContent += chunk.delta;
-          yield { event: 'content_delta', data: { delta: chunk.delta } };
+          const cleanDelta = this.cleanLlmContent(chunk.delta);
+          if (cleanDelta) {
+            fullContent += cleanDelta;
+            yield { event: 'content_delta', data: { delta: cleanDelta } };
+          }
         }
 
         if (chunk.toolCallDelta) {
@@ -283,8 +286,11 @@ export class ConversationsService {
           stream: true,
         })) {
           if (chunk.delta) {
-            yield { event: 'content_delta', data: { delta: chunk.delta } };
-            fullContent += chunk.delta;
+            const cleanDelta = this.cleanLlmContent(chunk.delta);
+            if (cleanDelta) {
+              yield { event: 'content_delta', data: { delta: cleanDelta } };
+              fullContent += cleanDelta;
+            }
           }
           if (chunk.done && chunk.usage) {
             totalUsage.promptTokens += chunk.usage.promptTokens;
@@ -435,6 +441,28 @@ export class ConversationsService {
         },
       },
     }));
+  }
+
+  /**
+   * Strip internal LLM markup from model output before sending to the client.
+   * Currently handles:
+   *  - DeepSeek DSML function-call markers (<｜｜DSML｜｜...> blocks)
+   *  - Any stray <｜｜...｜｜> tokens
+   */
+  private cleanLlmContent(text: string): string {
+    if (!text) return text;
+    // Remove full DSML tool_calls blocks (they span multiple chunks when buffered,
+    // but we sanitize greedily per-chunk and let incomplete tags pass harmlessly).
+    return text
+      // Full self-contained DSML blocks
+      .replace(/<｜｜DSML｜｜tool_calls>[\s\S]*?<\/｜｜DSML｜｜tool_calls>/g, '')
+      // Any remaining standalone DSML open/close tags
+      .replace(/<｜｜DSML｜｜[^>]*>/g, '')
+      .replace(/<\/｜｜DSML｜｜[^>]*>/g, '')
+      // DeepSeek thinking separators that sometimes leak
+      .replace(/<｜think｜>/g, '').replace(/<｜\/think｜>/g, '')
+      // Generic ｜｜...｜｜ markers
+      .replace(/<｜｜[^｜]*｜｜>/g, '');
   }
 
   private extractCodeFromSkillMd(skillMd: string, language: string): string {

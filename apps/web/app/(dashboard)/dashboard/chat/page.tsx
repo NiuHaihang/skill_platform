@@ -13,6 +13,25 @@ import toast from 'react-hot-toast';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
 
+/**
+ * Strip internal LLM markup (DeepSeek DSML, think tags, etc.)
+ * so users never see raw model internals.
+ */
+function cleanContent(text: string): string {
+  if (!text) return text;
+  return text
+    // Full DSML tool_calls blocks
+    .replace(/<\|\|DSML\|\|tool_calls>[\s\S]*?<\/\|\|DSML\|\|tool_calls>/g, '')
+    // Individual DSML tags  <｜｜DSML｜｜xxx>  or  </｜｜DSML｜｜xxx>
+    .replace(/<[/]?\|\|DSML\|\|[^>]*>/g, '')
+    // DeepSeek thinking wrapper  <｜think｜>…</｜think｜>
+    .replace(/<\|think\|>[\s\S]*?<\/\|think\|>/g, '')
+    .replace(/<[/]?\|think\|>/g, '')
+    // Generic  <｜｜…｜｜>  markers
+    .replace(/<\|\|[^|]*\|\|>/g, '')
+    .trim();
+}
+
 /** Fetch wrapper that automatically refreshes the access token on 401. */
 async function fetchWithAuth(url: string, init: RequestInit): Promise<Response> {
   const token = Cookies.get('access_token');
@@ -181,7 +200,7 @@ function ChatContent() {
               const data = JSON.parse(line.slice(6));
 
               if (eventType === 'content_delta') {
-                assistantContent += data.delta;
+                assistantContent += cleanContent(data.delta ?? '');
                 setStreamingContent(assistantContent);
               } else if (eventType === 'tool_use') {
                 setActiveToolCall(`Running skill: ${data.skillSlug} (${data.language})`);
@@ -323,7 +342,7 @@ function ChatContent() {
               )}
               {streamingContent ? (
                 <div className="chat-assistant">
-                  <p className="whitespace-pre-wrap">{streamingContent}</p>
+                  <p className="whitespace-pre-wrap">{cleanContent(streamingContent)}</p>
                   <span className="inline-block w-0.5 h-4 bg-brand-400 ml-0.5 animate-typing align-middle" />
                 </div>
               ) : (
@@ -416,7 +435,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 
       {/* Bubble */}
       <div className={cn('max-w-[75%]', isUser ? 'chat-user' : 'chat-assistant')}>
-        <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
+        <p className="whitespace-pre-wrap leading-relaxed">{isUser ? message.content : cleanContent(message.content)}</p>
       </div>
     </div>
   );
