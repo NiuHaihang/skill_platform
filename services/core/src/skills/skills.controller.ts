@@ -39,6 +39,14 @@ export class SkillsController {
     return this.skillsService.findBySlugL1(slug);
   }
 
+  @ApiOperation({ summary: 'Get full Skill by UUID id (for editing)' })
+  @ApiBearerAuth('access-token')
+  @UseGuards(JwtAuthGuard)
+  @Get(':id/detail')
+  async getById(@Param('id') id: string) {
+    return this.skillsService.findByIdOrThrow(id);
+  }
+
   @ApiOperation({ summary: 'Get full Skill spec (requires auth)' })
   @ApiBearerAuth('access-token')
   @UseGuards(JwtAuthGuard)
