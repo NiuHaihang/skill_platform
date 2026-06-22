@@ -53,7 +53,21 @@ export class ConversationsService {
     return this.conversationRepo.find({
       where: { userId },
       order: { lastMessageAt: 'DESC' },
+      relations: ['agent'],
     });
+  }
+
+  async renameConversation(id: string, userId: string, title: string): Promise<Conversation> {
+    const conv = await this.getConversationOrThrow(id, userId);
+    conv.title = title.trim() || conv.title;
+    return this.conversationRepo.save(conv);
+  }
+
+  async deleteConversation(id: string, userId: string): Promise<void> {
+    const conv = await this.getConversationOrThrow(id, userId);
+    // Cascade-delete messages first (entity might not have cascade set).
+    await this.messageRepo.delete({ conversationId: conv.id });
+    await this.conversationRepo.remove(conv);
   }
 
   async getMessages(conversationId: string, userId: string): Promise<Message[]> {
@@ -90,6 +104,12 @@ export class ConversationsService {
     // 1. Save user message.
     const userMessage = await this.saveMessage(conversationId, 'user', userContent);
     yield { event: 'message_start', data: { messageId: userMessage.id, role: 'user' } };
+
+    // Auto-update title from the first user message.
+    if (conv.messageCount === 0) {
+      const autoTitle = userContent.slice(0, 60).trim() + (userContent.length > 60 ? '…' : '');
+      await this.conversationRepo.update(conversationId, { title: autoTitle });
+    }
 
     try {
       // 2. Load message history and build LLM messages.
