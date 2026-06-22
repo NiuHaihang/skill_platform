@@ -15,7 +15,7 @@ LABEL skillforge.sandbox.managed="true"
 
 # Create non-privileged sandbox user
 RUN groupadd -r sandbox && \
-    useradd -r -g sandbox -u 65534 -d /home/sandbox -s /usr/sbin/nologin sandbox
+    useradd -r -g sandbox -u 10001 -d /home/sandbox -s /usr/sbin/nologin sandbox
 
 # ============================================
 # Tier 2 Node.js packages

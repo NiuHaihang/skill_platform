@@ -4,9 +4,15 @@ import axios, { AxiosInstance } from 'axios';
 
 export interface LlmMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string;
+  content: string | null;
   toolCallId?: string;
   name?: string;
+  // Present on assistant messages that made tool calls.
+  tool_calls?: Array<{
+    id: string;
+    type: 'function';
+    function: { name: string; arguments: string };
+  }>;
 }
 
 export interface LlmTool {
@@ -46,7 +52,9 @@ export interface LlmResponse {
 
 export type LlmStreamChunk = {
   delta: string;
-  toolCallDelta?: { id?: string; name?: string; arguments?: string };
+  // Present when the LLM is streaming a tool call fragment.
+  // index identifies which parallel tool call this belongs to.
+  toolCallDelta?: { index?: number; id?: string; name?: string; arguments?: string };
   done: boolean;
   usage?: LlmResponse['usage'];
 };
@@ -174,7 +182,7 @@ export class LlmGatewayService {
 
     const body: Record<string, unknown> = {
       model: req.model,
-      messages: req.messages,
+      messages: this.serializeMessages(req.messages),
       temperature: req.temperature ?? 0.7,
       max_tokens: req.maxTokens ?? 4096,
     };
@@ -206,10 +214,13 @@ export class LlmGatewayService {
 
     const body: Record<string, unknown> = {
       model: req.model,
-      messages: req.messages,
+      messages: this.serializeMessages(req.messages),
       temperature: req.temperature ?? 0.7,
       max_tokens: req.maxTokens ?? 4096,
       stream: true,
+      // Request usage in streaming mode (supported by DeepSeek & OpenAI).
+      // Without this, usage is always 0 in streaming responses.
+      stream_options: { include_usage: true },
     };
 
     if (req.tools?.length) {
@@ -222,6 +233,11 @@ export class LlmGatewayService {
     });
 
     let buffer = '';
+    // Accumulate tool call fragments indexed by their position (index field).
+    // This supports parallel tool calls (multiple skills at once).
+    const toolCallAcc: Record<number, { id: string; name: string; arguments: string }> = {};
+    let pendingUsage: LlmResponse['usage'] | undefined;
+
     for await (const chunk of response.data) {
       buffer += (chunk as Buffer).toString();
       const lines = buffer.split('\n');
@@ -231,26 +247,52 @@ export class LlmGatewayService {
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6).trim();
         if (data === '[DONE]') {
-          yield { delta: '', done: true };
+          yield { delta: '', done: true, usage: pendingUsage };
           return;
         }
 
         try {
           const parsed = JSON.parse(data);
+
+          // Capture usage from the final chunk that includes it (before [DONE]).
+          if (parsed.usage) {
+            pendingUsage = {
+              promptTokens: parsed.usage.prompt_tokens ?? 0,
+              completionTokens: parsed.usage.completion_tokens ?? 0,
+              totalTokens: parsed.usage.total_tokens ?? 0,
+            };
+          }
+
           const delta = parsed.choices?.[0]?.delta;
           if (!delta) continue;
 
-          yield {
-            delta: delta.content || '',
-            toolCallDelta: delta.tool_calls?.[0]
-              ? {
-                  id: delta.tool_calls[0].id,
-                  name: delta.tool_calls[0].function?.name,
-                  arguments: delta.tool_calls[0].function?.arguments,
-                }
-              : undefined,
-            done: false,
-          };
+          // Accumulate tool call fragments by index (supports parallel tool calls).
+          if (delta.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              const idx: number = tc.index ?? 0;
+              if (!toolCallAcc[idx]) {
+                toolCallAcc[idx] = { id: '', name: '', arguments: '' };
+              }
+              if (tc.id)                   toolCallAcc[idx].id        = tc.id;
+              if (tc.function?.name)       toolCallAcc[idx].name      = tc.function.name;
+              if (tc.function?.arguments)  toolCallAcc[idx].arguments += tc.function.arguments;
+
+              yield {
+                delta: '',
+                toolCallDelta: {
+                  index: idx,
+                  id:        tc.id,
+                  name:      tc.function?.name,
+                  arguments: tc.function?.arguments,
+                },
+                done: false,
+              };
+            }
+          }
+
+          if (delta.content) {
+            yield { delta: delta.content, done: false };
+          }
         } catch {
           // Skip malformed SSE chunks.
         }
@@ -416,6 +458,31 @@ export class LlmGatewayService {
       return model.slice(7);
     }
     return model;
+  }
+
+  /**
+   * Convert LlmMessage[] (our camelCase TS types) to the OpenAI wire format.
+   * Key differences:
+   *  - toolCallId  → tool_call_id  (for role='tool' messages)
+   *  - tool_calls stays as-is (already snake_case from assistant turn)
+   *  - content may be null when the assistant only makes tool calls
+   */
+  private serializeMessages(messages: LlmMessage[]): Record<string, unknown>[] {
+    return messages.map((msg) => {
+      const out: Record<string, unknown> = {
+        role: msg.role,
+        content: msg.content,
+      };
+      // tool role requires tool_call_id (snake_case)
+      if (msg.role === 'tool' && msg.toolCallId) {
+        out.tool_call_id = msg.toolCallId;
+      }
+      // assistant messages with tool calls
+      if (msg.role === 'assistant' && msg.tool_calls) {
+        out.tool_calls = msg.tool_calls;
+      }
+      return out;
+    });
   }
 
   private convertToolsToAnthropicFormat(tools: LlmTool[]) {

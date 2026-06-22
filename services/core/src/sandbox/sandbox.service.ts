@@ -42,7 +42,7 @@ export class SandboxService {
     this.client = axios.create({
       baseURL: apiUrl,
       headers: {
-        'X-API-Key': apiKey,
+        'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       timeout: timeoutMs + 5000, // Give a bit of extra headroom beyond sandbox timeout.

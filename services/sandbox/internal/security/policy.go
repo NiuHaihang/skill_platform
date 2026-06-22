@@ -77,7 +77,7 @@ var tier1Policy = TierPolicy{
 	NetworkEnabled:   false,
 	ReadOnlyRootfs:   true,
 	TmpfsSizeMB:      64,
-	TmpfsMounts:      []string{"/tmp"},
+	TmpfsMounts:      []string{"/tmp", "/workspace"},
 	MaxPIDs:          50,
 	NoNewPrivileges:  true,
 	DropCapabilities: allCapabilities(),

@@ -110,19 +110,23 @@ func (d *DockerClient) CreateContainer(ctx context.Context, language string, tie
 func (d *DockerClient) buildContainerConfig(rt config.RuntimeConfig, policy security.TierPolicy) *container.Config {
 	return &container.Config{
 		Image: rt.Image,
-		// Keep the container running with a sleep loop.
-		// Code execution happens via docker exec.
-		Cmd:        []string{"sleep", "infinity"},
+		// Create workspace subdirectories then keep the container alive.
+		// Runs as root (default) to set up the tmpfs workspace, then exec
+		// commands run as the sandbox user (10001) via ExecOptions.User.
+		Cmd: []string{"sh", "-c",
+			"mkdir -p /workspace/code /workspace/input /workspace/output && " +
+				"chmod 755 /workspace/code /workspace/input /workspace/output && " +
+				"sleep infinity",
+		},
 		WorkingDir: "/workspace",
-		// Set a restrictive user (non-root). The image should have user "sandbox" (UID 1000).
-		User: "1000:1000",
+		// NOTE: No User set here — init runs as root to create dirs on tmpfs.
+		// Exec commands set User: "10001:10001" individually.
 		Env: []string{
 			"HOME=/tmp",
 			"PYTHONDONTWRITEBYTECODE=1",
 			"NODE_ENV=production",
 		},
 		// Disable networking at config level for tier 1 and 2.
-		// Tier 3 gets network through the host config.
 		NetworkDisabled: !policy.NetworkEnabled,
 	}
 }
@@ -324,7 +328,7 @@ func (d *DockerClient) ExecInContainer(ctx context.Context, containerID string, 
 		Env:          env,
 		WorkingDir:   "/workspace",
 		// Run as the sandbox user (non-root).
-		User: "1000:1000",
+		User: "10001:10001",
 	}
 
 	execResp, err := d.cli.ContainerExecCreate(ctx, containerID, execCfg)

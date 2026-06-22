@@ -111,7 +111,9 @@ export class ConversationsService {
 
       // 6. Stream the LLM response.
       let fullContent = '';
-      let pendingToolCalls: any[] = [];
+      // Use an index-keyed map so we correctly accumulate fragments for each
+      // parallel tool call (index 0, 1, 2 …) without id-based collisions.
+      const toolCallByIndex = new Map<number, { id: string; name: string; arguments: string }>();
       let totalUsage = { promptTokens: 0, completionTokens: 0 };
       const assistantMessageId = await this.generateMessageId();
 
@@ -132,23 +134,29 @@ export class ConversationsService {
         }
 
         if (chunk.toolCallDelta) {
-          // Accumulate tool call deltas.
-          const existing = pendingToolCalls.find((tc) => tc.id === chunk.toolCallDelta!.id);
-          if (existing) {
-            existing.function.arguments = (existing.function.arguments || '') + (chunk.toolCallDelta.arguments || '');
-          } else if (chunk.toolCallDelta.name) {
-            pendingToolCalls.push({
-              id: chunk.toolCallDelta.id || `tc_${Date.now()}`,
-              type: 'function',
-              function: { name: chunk.toolCallDelta.name, arguments: chunk.toolCallDelta.arguments || '' },
-            });
+          const { index = 0, id, name, arguments: args } = chunk.toolCallDelta;
+          if (!toolCallByIndex.has(index)) {
+            toolCallByIndex.set(index, { id: '', name: '', arguments: '' });
           }
+          const entry = toolCallByIndex.get(index)!;
+          if (id)   entry.id        = id;
+          if (name) entry.name      = name;
+          if (args) entry.arguments += args;
         }
 
         if (chunk.done) {
           totalUsage = chunk.usage ?? totalUsage;
         }
       }
+
+      // Convert index-map to ordered array.
+      const pendingToolCalls = Array.from(toolCallByIndex.entries())
+        .sort(([a], [b]) => a - b)
+        .map(([, tc]) => ({
+          id: tc.id || `tc_${Date.now()}`,
+          type: 'function' as const,
+          function: { name: tc.name, arguments: tc.arguments },
+        }));
 
       // 7. Handle tool calls (Skill execution).
       const toolResults = new Map<string, { stdout: string; stderr: string; exitCode: number }>();
@@ -183,8 +191,8 @@ export class ConversationsService {
 
           // Load L2 spec and extract executable code.
           const skillFull = await this.skillsService.findBySlugL2(skillSlug);
-          if (!skillFull?.skillMd) {
-            const failure = { stdout: '', stderr: `Skill ${skillSlug} not found`, exitCode: 1 };
+          if (!skillFull?.skillMd?.trim()) {
+            const failure = { stdout: '', stderr: `Skill '${skillSlug}' has no implementation code (skillMd is empty). Please add code to the skill.`, exitCode: 1 };
             toolResults.set(toolCall.id, failure);
             yield {
               event: 'tool_result',
@@ -194,6 +202,16 @@ export class ConversationsService {
           }
 
           const code = this.extractCodeFromSkillMd(skillFull.skillMd, args.language || 'python');
+          if (!code.trim()) {
+            const lang = args.language || 'python';
+            const failure = { stdout: '', stderr: `No ${lang} code block found in skill '${skillSlug}'. Make sure the skill contains a \`\`\`${lang} ... \`\`\` code block.`, exitCode: 1 };
+            toolResults.set(toolCall.id, failure);
+            yield {
+              event: 'tool_result',
+              data: { toolCallId: toolCall.id, ...failure },
+            };
+            continue;
+          }
           const tier = this.determineTier(skillFull);
 
           const execResult = await this.sandboxService.execute({
@@ -227,11 +245,28 @@ export class ConversationsService {
         }
 
         // Get final response after tool results via streaming.
+        // Build the correct assistant message: include tool_calls when present.
+        const assistantTurnMessage: any = {
+          role: 'assistant',
+          // content may be null when LLM only makes tool calls (no text)
+          content: fullContent || null,
+        };
+        if (pendingToolCalls.length > 0) {
+          assistantTurnMessage.tool_calls = pendingToolCalls.map((tc) => ({
+            id: tc.id,
+            type: 'function' as const,
+            function: {
+              name: tc.function.name,
+              arguments: tc.function.arguments,
+            },
+          }));
+        }
+
         for await (const chunk of this.llmGateway.stream({
           model: agent.modelName,
           messages: [
             ...llmMessages,
-            { role: 'assistant', content: fullContent },
+            assistantTurnMessage,
             ...pendingToolCalls.map((tc) => {
               const result = toolResults.get(tc.id);
               return {
@@ -286,7 +321,13 @@ export class ConversationsService {
         },
       };
     } catch (error: any) {
-      this.logger.error('Error processing message', { error: error.message, conversationId });
+      this.logger.error('Error processing message', {
+        error: error.message,
+        stack: error.stack?.split('\n').slice(0, 5).join(' | '),
+        status: error.response?.status,
+        responseData: JSON.stringify(error.response?.data)?.slice(0, 500),
+        conversationId,
+      });
       yield { event: 'error', data: { message: this.toUserFriendlyError(error) } };
     }
   }
@@ -295,9 +336,22 @@ export class ConversationsService {
   private toUserFriendlyError(error: any): string {
     const msg: string = error?.message ?? '';
     const status: number = error?.response?.status ?? error?.status ?? 0;
-    const data = error?.response?.data;
 
-    // LLM provider API key / auth errors
+    // ── Sandbox-specific errors ──────────────────────────────────
+    // ServiceUnavailableException thrown by SandboxService
+    if (error?.name === 'ServiceUnavailableException' || status === 503) {
+      return '🐳 代码沙箱服务暂时不可用，请稍后重试。';
+    }
+    // Sandbox auth error (wrong SANDBOX_API_KEY config)
+    if (msg.includes('Sandbox') || msg.includes('sandbox')) {
+      if (status === 401) {
+        return '🔑 沙箱服务鉴权失败，请检查服务器的 SANDBOX_API_KEY 配置是否一致。';
+      }
+      return '❌ 代码沙箱执行失败，请检查 Skill 代码是否正确。';
+    }
+
+    // ── LLM provider errors ──────────────────────────────────────
+    // LLM API key / auth errors
     if (status === 401 || msg.includes('401') || msg.toLowerCase().includes('invalid api key') || msg.toLowerCase().includes('unauthorized')) {
       return '❌ AI 模型 API Key 无效或未配置。请在 .env.local 中填入正确的 API Key，然后重启服务。';
     }
@@ -313,17 +367,17 @@ export class ConversationsService {
     }
 
     // Model not found
-    if (status === 404 || msg.toLowerCase().includes('model') && msg.toLowerCase().includes('not found')) {
+    if (status === 404 || (msg.toLowerCase().includes('model') && msg.toLowerCase().includes('not found'))) {
       return '🤖 指定的 AI 模型不存在，请在 Agent 设置中检查模型名称是否正确。';
     }
 
     // Context length
-    if (msg.toLowerCase().includes('context') && msg.toLowerCase().includes('length') || msg.toLowerCase().includes('maximum context')) {
+    if ((msg.toLowerCase().includes('context') && msg.toLowerCase().includes('length')) || msg.toLowerCase().includes('maximum context')) {
       return '📄 消息超出模型最大上下文长度，请缩短对话历史或减少消息长度。';
     }
 
     // Network / timeout
-    if (msg.toLowerCase().includes('timeout') || msg.toLowerCase().includes('econnrefused') || msg.toLowerCase().includes('network')) {
+    if (msg.toLowerCase().includes('timeout') || msg.toLowerCase().includes('econnaborted') || msg.toLowerCase().includes('network')) {
       return '🌐 网络请求超时，请检查网络连接后重试。';
     }
 
@@ -332,11 +386,12 @@ export class ConversationsService {
       return '🦙 Ollama 服务未启动，请运行 `ollama serve` 后重试。';
     }
 
-    // Generic fallback — hide raw technical message
+    // Generic fallback
     return '😕 对话处理失败，请稍后重试。如果问题持续存在，请检查服务器日志。';
   }
 
   // ─────────────────────────────────────────────
+
   // Private helpers
   // ─────────────────────────────────────────────
 

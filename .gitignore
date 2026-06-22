@@ -21,6 +21,7 @@ logs/
 *.exe
 *.test
 vendor/
+.bin/
 
 # IDE
 .idea/

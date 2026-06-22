@@ -3,9 +3,8 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Zap, Eye, EyeOff, Loader2 } from 'lucide-react';
+import { Zap, Eye, EyeOff, Loader2, AlertCircle } from 'lucide-react';
 import { useAuthStore } from '@/lib/auth-store';
-import toast from 'react-hot-toast';
 import { cn } from '@/lib/utils';
 
 export default function LoginPage() {
@@ -15,16 +14,22 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError('');
     try {
       await login(email, password);
-      toast.success('Welcome back!');
       router.push('/dashboard');
     } catch (err: any) {
-      const msg = err?.response?.data?.message || 'Invalid credentials';
-      toast.error(msg);
+      const data = err?.response?.data;
+      // NestJS may return message as string or string[]
+      const raw = data?.message;
+      const msg = Array.isArray(raw)
+        ? raw[0]
+        : raw || '邮箱或密码不正确，请重试';
+      setError(msg);
     }
   };
 
@@ -52,6 +57,15 @@ export default function LoginPage() {
         {/* Form */}
         <div className="glass-lg rounded-2xl p-8">
           <form onSubmit={handleSubmit} className="space-y-5">
+
+            {/* ── Inline error banner ── */}
+            {error && (
+              <div className="flex items-start gap-2.5 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/25 text-red-400 text-sm">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                <span>{error}</span>
+              </div>
+            )}
+
             <div>
               <label htmlFor="email" className="block text-sm font-medium mb-1.5">
                 Email
@@ -60,10 +74,10 @@ export default function LoginPage() {
                 id="email"
                 type="email"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(e) => { setEmail(e.target.value); setError(''); }}
                 placeholder="you@example.com"
                 required
-                className="input-field"
+                className={cn('input-field', error && 'border-red-500/40')}
               />
             </div>
 
@@ -81,10 +95,10 @@ export default function LoginPage() {
                   id="password"
                   type={showPassword ? 'text' : 'password'}
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  onChange={(e) => { setPassword(e.target.value); setError(''); }}
                   placeholder="••••••••"
                   required
-                  className="input-field pr-12"
+                  className={cn('input-field pr-12', error && 'border-red-500/40')}
                 />
                 <button
                   type="button"
