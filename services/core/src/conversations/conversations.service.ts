@@ -127,7 +127,7 @@ export class ConversationsService {
       const tools = this.buildSkillTools(skillsL1);
 
       // 5. Build the full LLM message list.
-      const llmMessages = this.buildLlmMessages(agent, history, userContent);
+      const llmMessages = this.buildLlmMessages(agent, history, userContent, skillsL1);
 
       // 6. Stream the LLM response.
       let fullContent = '';
@@ -224,17 +224,29 @@ export class ConversationsService {
             continue;
           }
 
-          const code = this.extractCodeFromSkillMd(skillFull.skillMd, args.language || 'python');
+          const rawCode = this.extractCodeFromSkillMd(skillFull.skillMd, args.language || 'python');
+
+          // If no executable code block, generate a minimal wrapper that outputs
+          // the query so the LLM can use its own knowledge to fulfill the request.
+          // This gracefully handles CLI-based skills that don't have inline Python code.
+          let code = rawCode;
           if (!code.trim()) {
-            const lang = args.language || 'python';
-            const failure = { stdout: '', stderr: `No ${lang} code block found in skill '${skillSlug}'. Make sure the skill contains a \`\`\`${lang} ... \`\`\` code block.`, exitCode: 1 };
-            toolResults.set(toolCall.id, failure);
-            yield {
-              event: 'tool_result',
-              data: { toolCallId: toolCall.id, ...failure },
-            };
-            continue;
+            const query = (args as any).query || (args as any).input || '';
+            if (!query.trim()) {
+              const failure = {
+                stdout: '',
+                stderr: `Skill '${skillSlug}' requires a 'query' argument but none was provided.`,
+                exitCode: 1,
+              };
+              toolResults.set(toolCall.id, failure);
+              yield { event: 'tool_result', data: { toolCallId: toolCall.id, ...failure } };
+              continue;
+            }
+            // Generate a wrapper that prints the query context; the LLM will
+            // synthesize an answer from its own knowledge using this structure.
+            code = `import json, sys\nquery = ${JSON.stringify(query)}\nprint(json.dumps({"query": query, "status": "no_code", "message": "Skill '${skillSlug}' has no executable code. Using LLM knowledge to answer: " + query}))\n`;
           }
+
           const tier = this.determineTier(skillFull);
 
           const execResult = await this.sandboxService.execute({
@@ -421,11 +433,31 @@ export class ConversationsService {
   // Private helpers
   // ─────────────────────────────────────────────
 
-  private buildLlmMessages(agent: Agent, history: Message[], newUserContent: string): LlmMessage[] {
+  private buildLlmMessages(agent: Agent, history: Message[], newUserContent: string, skillsL1: any[] = []): LlmMessage[] {
     const messages: LlmMessage[] = [];
 
-    // System prompt.
-    const systemPrompt = agent.systemPrompt || 'You are a helpful AI assistant with access to specialized Skills.';
+    // Build system prompt: start with agent's custom prompt, then append skill guidance.
+    let systemPrompt = agent.systemPrompt || 'You are a helpful AI assistant.';
+
+    if (skillsL1.length > 0) {
+      const skillList = skillsL1.map((s) =>
+        `- **${s.name}** (slug: \`${s.slug}\`): ${s.description}`,
+      ).join('\n');
+
+      systemPrompt += `
+
+## Available Skills
+You have access to the following Skills that can be executed in a sandboxed environment. **When the user's request matches a skill's purpose, you MUST call it using the function calling mechanism instead of answering from memory.**
+
+${skillList}
+
+## How to Use Skills
+- Call the skill's function with a \`query\` parameter containing the user's search term or instructions.
+- Wait for the tool result, then synthesize it into your final answer.
+- If a skill is available that can answer the user's question with real-time or specialized data, ALWAYS prefer calling the skill over using your training data.
+- Do NOT make up search results — always call the skill to get real data.`;
+    }
+
     messages.push({ role: 'system', content: systemPrompt });
 
     // Historical messages (exclude the latest user message we're about to add).
@@ -448,16 +480,23 @@ export class ConversationsService {
         parameters: {
           type: 'object',
           properties: {
+            // Primary input: natural-language query or instruction for the skill.
+            query: {
+              type: 'string',
+              description: 'The search query, question, or instruction to pass to the skill.',
+            },
+            // Alternate parameter name for non-search skills.
+            input: {
+              type: 'string',
+              description: 'Additional input or parameters for the skill (JSON string or plain text).',
+            },
             language: {
               type: 'string',
               enum: ['python', 'javascript'],
-              description: 'The programming language to use',
-            },
-            files: {
-              type: 'object',
-              description: 'Optional input files as filename->base64 map',
+              description: 'Programming language for code execution (default: python)',
             },
           },
+          required: ['query'],
         },
       },
     }));
