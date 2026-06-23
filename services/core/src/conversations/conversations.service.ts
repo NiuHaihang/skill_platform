@@ -359,13 +359,29 @@ export class ConversationsService {
         },
       };
     } catch (error: any) {
-      this.logger.error('Error processing message', {
-        error: error.message,
-        stack: error.stack?.split('\n').slice(0, 5).join(' | '),
-        status: error.response?.status,
-        responseData: JSON.stringify(error.response?.data)?.slice(0, 500),
-        conversationId,
-      });
+      // Always print raw error — nestjs-pino field merging only works with object-first format.
+      console.error('[sendMessage] ERROR:', error?.message, '\nStack:', error?.stack?.slice(0, 600));
+
+      // Safely extract response data — in streaming mode error.response?.data is a
+      // Node.js IncomingMessage (not plain JSON), so JSON.stringify causes a circular
+      // reference crash. Only stringify if it's a plain object/string.
+      let responseDataStr: string | undefined;
+      try {
+        const rd = error.response?.data;
+        if (rd && typeof rd === 'object' && !rd.readable) {
+          responseDataStr = JSON.stringify(rd)?.slice(0, 500);
+        } else if (typeof rd === 'string') {
+          responseDataStr = rd.slice(0, 500);
+        }
+      } catch {
+        responseDataStr = '[unserializable]';
+      }
+
+      // nestjs-pino requires object as first arg for field merging.
+      this.logger.error(
+        { err: error.message, httpStatus: error.response?.status, responseData: responseDataStr, conversationId },
+        'Error processing message',
+      );
       yield { event: 'error', data: { message: this.toUserFriendlyError(error) } };
     }
   }
@@ -461,8 +477,46 @@ ${skillList}
     messages.push({ role: 'system', content: systemPrompt });
 
     // Historical messages (exclude the latest user message we're about to add).
+    // We must correctly reconstruct tool/assistant messages to satisfy the LLM API contract:
+    //   - assistant messages with tool_calls must include tool_calls field (not just content)
+    //   - tool messages must include tool_call_id
+    //   - content must be stripped of any internal markup (DSML etc.)
     for (const msg of history.slice(0, -1)) {
-      messages.push({ role: msg.role, content: msg.content });
+      if (msg.role === 'user') {
+        messages.push({ role: 'user', content: this.cleanLlmContent(msg.content) ?? '' });
+
+      } else if (msg.role === 'assistant') {
+        const assistantMsg: LlmMessage = {
+          role: 'assistant',
+          // Strip any leaked DSML or think tags from saved assistant content.
+          content: this.cleanLlmContent(msg.content) || null,
+        };
+        // Re-attach toolCalls if this assistant turn made function calls.
+        if (msg.toolCalls && Array.isArray(msg.toolCalls) && msg.toolCalls.length > 0) {
+          assistantMsg.tool_calls = msg.toolCalls as any;
+        }
+        messages.push(assistantMsg);
+
+      } else if (msg.role === 'tool') {
+        // Reconstruct tool result message — tool_call_id is mandatory.
+        // We store it in tool_results jsonb or derive it from tool_calls on the matched assistant msg.
+        const toolCallId: string | undefined =
+          (msg.toolResults as any)?.toolCallId ??
+          (msg.toolResults as any)?.[0]?.toolCallId;
+
+        if (!toolCallId) {
+          // Defensively skip orphaned tool messages without an ID — sending them
+          // would cause a 400 from DeepSeek (tool message must reference a tool_call).
+          this.logger.warn({ msgId: msg.id }, 'Skipping orphaned tool message without tool_call_id');
+          continue;
+        }
+
+        messages.push({
+          role: 'tool',
+          content: this.cleanLlmContent(msg.content) ?? '',
+          toolCallId,
+        });
+      }
     }
 
     // Current user message.
@@ -470,6 +524,7 @@ ${skillList}
 
     return messages;
   }
+
 
   private buildSkillTools(skillsL1: any[]): LlmTool[] {
     return skillsL1.map((skill) => ({

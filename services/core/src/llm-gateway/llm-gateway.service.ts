@@ -234,14 +234,49 @@ export class LlmGatewayService {
 
     let buffer = '';
     // Accumulate tool call fragments indexed by their position (index field).
-    // This supports parallel tool calls (multiple skills at once).
     const toolCallAcc: Record<number, { id: string; name: string; arguments: string }> = {};
     let pendingUsage: LlmResponse['usage'] | undefined;
 
-    // Buffer for accumulating DSML content across multiple chunks.
-    // DeepSeek sometimes streams DSML tool calls via delta.content instead of delta.tool_calls.
-    let dsmlBuffer = '';
+    // ── DeepSeek DSML stream detection ──────────────────────────────────────
+    // DeepSeek streams DSML tool-call blocks inside delta.content instead of
+    // delta.tool_calls.  The block spans MULTIPLE SSE chunks (DeepSeek
+    // tokenises the tag character-by-character), so we cannot use a simple
+    // per-chunk `includes()` check.
+    //
+    // Strategy:
+    //   • Accumulate all delta.content in `textBuffer`.
+    //   • After each append, flush the "safe" prefix — i.e. the portion that
+    //     can't possibly be the start of a DSML open-tag — as a normal delta.
+    //   • As soon as the open-tag `<｜｜DSML｜｜tool_calls>` is fully present,
+    //     switch to `dsmlCapturing` mode and buffer the DSML block until the
+    //     matching close-tag is seen, then parse it into standard toolCallDeltas.
+    const DSML_OPEN  = '<｜｜DSML｜｜tool_calls>';
+    const DSML_CLOSE = '</｜｜DSML｜｜tool_calls>';
+    // Maximum characters we must hold back to detect the open tag across chunks.
+    const LOOKAHEAD  = DSML_OPEN.length - 1;
+
+    let textBuffer    = ''; // Accumulated text content, partially flushed
+    let dsmlBuffer    = ''; // Accumulated DSML block content
     let dsmlCapturing = false;
+
+    const flushSafeText = (): void => {
+      if (dsmlCapturing) return; // Never flush while inside a DSML block
+      const safeLen = textBuffer.length - LOOKAHEAD;
+      if (safeLen > 0) {
+        const safe = textBuffer.slice(0, safeLen);
+        textBuffer = textBuffer.slice(safeLen);
+        // Suppress any stray DSML partial tags that slipped in before we started buffering.
+        const cleaned = safe
+          .replace(/<｜｜DSML｜｜[^>]*>/g, '')
+          .replace(/<\/｜｜DSML｜｜[^>]*>/g, '')
+          .replace(/<｜think｜>/g, '').replace(/<｜\/think｜>/g, '');
+        if (cleaned) {
+          // Use a locally-scoped helper so TS doesn't complain about yielding inside a closure.
+          _pendingFlush = cleaned;
+        }
+      }
+    };
+    let _pendingFlush: string | null = null;
 
     for await (const chunk of response.data) {
       buffer += (chunk as Buffer).toString();
@@ -252,9 +287,20 @@ export class LlmGatewayService {
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6).trim();
         if (data === '[DONE]') {
-          // If we were capturing a DSML block that never completed, try to parse it.
+          // Flush any remaining safe text.
+          if (textBuffer) {
+            const cleaned = textBuffer
+              .replace(/<｜｜DSML｜｜[^>]*>/g, '')
+              .replace(/<\/｜｜DSML｜｜[^>]*>/g, '')
+              .replace(/<｜think｜>/g, '').replace(/<｜\/think｜>/g, '');
+            if (cleaned) yield { delta: cleaned, done: false };
+          }
+          // Try to parse any incomplete DSML block we were accumulating.
           if (dsmlBuffer.trim()) {
-            this.parseDsmlToolCalls(dsmlBuffer, toolCallAcc);
+            const parsedCalls = this.parseDsmlToolCalls(dsmlBuffer, toolCallAcc);
+            for (const tc of parsedCalls) {
+              yield { delta: '', toolCallDelta: { index: tc.index, id: tc.id, name: tc.name, arguments: tc.arguments }, done: false };
+            }
           }
           yield { delta: '', done: true, usage: pendingUsage };
           return;
@@ -263,7 +309,6 @@ export class LlmGatewayService {
         try {
           const parsed = JSON.parse(data);
 
-          // Capture usage from the final chunk that includes it (before [DONE]).
           if (parsed.usage) {
             pendingUsage = {
               promptTokens: parsed.usage.prompt_tokens ?? 0,
@@ -275,80 +320,78 @@ export class LlmGatewayService {
           const delta = parsed.choices?.[0]?.delta;
           if (!delta) continue;
 
-          // Accumulate tool call fragments by index (supports parallel tool calls).
+          // ── Standard OpenAI tool_calls (non-DeepSeek models) ────────────
           if (delta.tool_calls) {
             for (const tc of delta.tool_calls) {
               const idx: number = tc.index ?? 0;
-              if (!toolCallAcc[idx]) {
-                toolCallAcc[idx] = { id: '', name: '', arguments: '' };
-              }
-              if (tc.id)                   toolCallAcc[idx].id        = tc.id;
-              if (tc.function?.name)       toolCallAcc[idx].name      = tc.function.name;
-              if (tc.function?.arguments)  toolCallAcc[idx].arguments += tc.function.arguments;
-
-              yield {
-                delta: '',
-                toolCallDelta: {
-                  index: idx,
-                  id:        tc.id,
-                  name:      tc.function?.name,
-                  arguments: tc.function?.arguments,
-                },
-                done: false,
-              };
+              if (!toolCallAcc[idx]) toolCallAcc[idx] = { id: '', name: '', arguments: '' };
+              if (tc.id)                  toolCallAcc[idx].id        = tc.id;
+              if (tc.function?.name)      toolCallAcc[idx].name      = tc.function.name;
+              if (tc.function?.arguments) toolCallAcc[idx].arguments += tc.function.arguments;
+              yield { delta: '', toolCallDelta: { index: idx, id: tc.id, name: tc.function?.name, arguments: tc.function?.arguments }, done: false };
             }
           }
 
+          // ── Content (may contain DeepSeek DSML tool calls) ──────────────
           if (delta.content) {
-            const content: string = delta.content;
+            if (dsmlCapturing) {
+              // Inside a DSML block — keep accumulating.
+              dsmlBuffer += delta.content;
 
-            // Detect DeepSeek DSML tool_calls in content stream.
-            // DeepSeek sometimes emits function calls as DSML text instead of delta.tool_calls.
-            if (dsmlCapturing || content.includes('<｜｜DSML｜｜tool_calls>') || content.includes('<|DSML|>') || dsmlBuffer.length > 0) {
-              dsmlBuffer += content;
-
-              // Check if we've started capturing DSML.
-              if (!dsmlCapturing && dsmlBuffer.includes('<｜｜DSML｜｜tool_calls>')) {
-                dsmlCapturing = true;
-                // Extract any text before the DSML block and yield it.
-                const dsmlStart = dsmlBuffer.indexOf('<｜｜DSML｜｜tool_calls>');
-                const textBefore = dsmlBuffer.slice(0, dsmlStart).trim();
-                if (textBefore) {
-                  yield { delta: textBefore, done: false };
-                }
-                dsmlBuffer = dsmlBuffer.slice(dsmlStart);
-              }
-
-              // Check if the DSML block is complete.
-              if (dsmlCapturing && dsmlBuffer.includes('</｜｜DSML｜｜tool_calls>')) {
-                // Extract the complete DSML block and parse it.
-                const endTag = '</｜｜DSML｜｜tool_calls>';
-                const endIdx = dsmlBuffer.indexOf(endTag) + endTag.length;
+              if (dsmlBuffer.includes(DSML_CLOSE)) {
+                const endIdx    = dsmlBuffer.indexOf(DSML_CLOSE) + DSML_CLOSE.length;
                 const dsmlBlock = dsmlBuffer.slice(0, endIdx);
                 const remainder = dsmlBuffer.slice(endIdx);
 
-                // Parse the DSML block into standard tool call deltas.
                 const parsedCalls = this.parseDsmlToolCalls(dsmlBlock, toolCallAcc);
                 for (const tc of parsedCalls) {
-                  yield {
-                    delta: '',
-                    toolCallDelta: { index: tc.index, id: tc.id, name: tc.name, arguments: tc.arguments },
-                    done: false,
-                  };
+                  yield { delta: '', toolCallDelta: { index: tc.index, id: tc.id, name: tc.name, arguments: tc.arguments }, done: false };
                 }
 
-                dsmlBuffer = '';
+                dsmlBuffer    = '';
                 dsmlCapturing = false;
 
-                // Yield any text after the DSML block.
-                if (remainder.trim()) {
-                  yield { delta: remainder, done: false };
+                // Any text after the DSML block goes back into textBuffer.
+                if (remainder) textBuffer += remainder;
+              }
+            } else {
+              // Accumulate into textBuffer and look for the DSML open tag.
+              textBuffer += delta.content;
+
+              const dsmlStartIdx = textBuffer.indexOf(DSML_OPEN);
+              if (dsmlStartIdx !== -1) {
+                // Flush text before the DSML open tag.
+                if (dsmlStartIdx > 0) {
+                  yield { delta: textBuffer.slice(0, dsmlStartIdx), done: false };
+                }
+                dsmlBuffer    = textBuffer.slice(dsmlStartIdx);
+                textBuffer    = '';
+                dsmlCapturing = true;
+
+                // The complete block may already be in dsmlBuffer (small responses).
+                if (dsmlBuffer.includes(DSML_CLOSE)) {
+                  const endIdx    = dsmlBuffer.indexOf(DSML_CLOSE) + DSML_CLOSE.length;
+                  const dsmlBlock = dsmlBuffer.slice(0, endIdx);
+                  const remainder = dsmlBuffer.slice(endIdx);
+
+                  const parsedCalls = this.parseDsmlToolCalls(dsmlBlock, toolCallAcc);
+                  for (const tc of parsedCalls) {
+                    yield { delta: '', toolCallDelta: { index: tc.index, id: tc.id, name: tc.name, arguments: tc.arguments }, done: false };
+                  }
+
+                  dsmlBuffer    = '';
+                  dsmlCapturing = false;
+                  if (remainder) textBuffer = remainder;
+                }
+              } else {
+                // No DSML tag yet. Flush the safe prefix so the user sees
+                // regular text with minimal latency.
+                flushSafeText();
+                if (_pendingFlush) {
+                  yield { delta: _pendingFlush, done: false };
+                  _pendingFlush = null;
                 }
               }
-              // Still accumulating — don't yield anything yet.
-            } else {
-              // Normal text content — yield it directly.
-              yield { delta: content, done: false };
             }
           }
         } catch {
@@ -360,9 +403,10 @@ export class LlmGatewayService {
 
   /**
    * Parse a DeepSeek DSML tool_calls block into standard tool call objects.
-   * Format: <｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="fn"><｜｜DSML｜｜parameter name="p" string="true">val</｜｜DSML｜｜parameter></｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>
    *
-   * Returns an array of parsed tool calls with index, id, name, arguments.
+   * Handles both spaced and no-space variants:
+   *   <｜｜DSML｜｜invoke name="fn">   ← standard
+   *   <｜｜DSML｜｜invokename="fn">    ← no-space (seen in some model outputs)
    */
   private parseDsmlToolCalls(
     dsml: string,
@@ -370,18 +414,17 @@ export class LlmGatewayService {
   ): Array<{ index: number; id: string; name: string; arguments: string }> {
     const results: Array<{ index: number; id: string; name: string; arguments: string }> = [];
 
-    // Match each <invoke> block.
-    const invokeRegex = /<｜｜DSML｜｜invoke\s+name="([^"]+)">([\s\S]*?)<\/｜｜DSML｜｜invoke>/g;
+    // \s* makes the space optional to handle both variants.
+    const invokeRegex = /<｜｜DSML｜｜invoke\s*name="([^"]+)"\s*>([\s\S]*?)<\/｜｜DSML｜｜invoke>/g;
     let match: RegExpExecArray | null;
-    let idx = Object.keys(acc).length; // Continue index after existing tool calls.
+    let idx = Object.keys(acc).length;
 
     while ((match = invokeRegex.exec(dsml)) !== null) {
       const funcName = match[1];
-      const body = match[2];
+      const body     = match[2];
 
-      // Parse parameters into a JSON object.
       const params: Record<string, unknown> = {};
-      const paramRegex = /<｜｜DSML｜｜parameter\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/｜｜DSML｜｜parameter>/g;
+      const paramRegex = /<｜｜DSML｜｜parameter\s*name="([^"]+)"[^>]*>([\s\S]*?)<\/｜｜DSML｜｜parameter>/g;
       let paramMatch: RegExpExecArray | null;
 
       while ((paramMatch = paramRegex.exec(body)) !== null) {
@@ -389,7 +432,7 @@ export class LlmGatewayService {
       }
 
       const argsStr = JSON.stringify(params);
-      const id = `dsml_tc_${Date.now()}_${idx}`;
+      const id      = `dsml_tc_${Date.now()}_${idx}`;
 
       acc[idx] = { id, name: funcName, arguments: argsStr };
       results.push({ index: idx, id, name: funcName, arguments: argsStr });
