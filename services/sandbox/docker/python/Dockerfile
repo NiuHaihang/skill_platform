@@ -88,6 +88,13 @@ COPY wrapper.py /opt/sandbox/wrapper.py
 RUN chmod 444 /opt/sandbox/wrapper.py && \
     chown root:root /opt/sandbox/wrapper.py
 
+# Pre-create workspace directories with sandbox ownership.
+# These become the tmpfs mount points at runtime; they must exist and be
+# owned by the sandbox user BEFORE the tmpfs is mounted on them.
+RUN mkdir -p /workspace/code /workspace/input /workspace/output && \
+    chown -R sandbox:sandbox /workspace && \
+    chmod 755 /workspace /workspace/code /workspace/input /workspace/output
+
 # ==========================================
 # Runtime environment
 # ==========================================

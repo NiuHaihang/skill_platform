@@ -5,6 +5,7 @@ package executor
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -203,18 +204,26 @@ func (e *Executor) Execute(ctx context.Context, req *ExecutionRequest) *Executio
 		}
 	}
 
-	// Step 6: Write the code file to /workspace/code/.
+	// Step 6: Write the code file to /workspace/code/ via exec+base64.
+	// CopyToContainer silently fails on tmpfs mounts in macOS Docker Desktop,
+	// so we encode the code as base64 and decode it inside the container.
 	codeFileName, wrapperCode := e.prepareCode(req)
-	codeFiles := map[string][]byte{
-		codeFileName: []byte(wrapperCode),
+	codeB64 := base64.StdEncoding.EncodeToString([]byte(wrapperCode))
+	codeDestPath := "/workspace/code/" + codeFileName
+	writeCmd := []string{"sh", "-c",
+		fmt.Sprintf("echo %s | base64 -d > %s", codeB64, codeDestPath),
 	}
-
-	if err := e.docker.CopyToContainer(execCtx, container.ID, "/workspace/code/", codeFiles); err != nil {
+	writeResult, err := e.docker.ExecAsRoot(execCtx, container.ID, writeCmd)
+	if err != nil || (writeResult != nil && writeResult.ExitCode != 0) {
+		stderr := ""
+		if writeResult != nil {
+			stderr = writeResult.Stderr
+		}
 		tainted = true
 		result.Error = &ExecutionError{
 			Code:    ErrCodeInternalError,
-			Message: "failed to copy code to container",
-			Details: err.Error(),
+			Message: "failed to write code file in container",
+			Details: fmt.Sprintf("err=%v stderr=%s", err, stderr),
 		}
 		return result
 	}

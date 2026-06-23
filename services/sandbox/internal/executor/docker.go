@@ -110,20 +110,21 @@ func (d *DockerClient) CreateContainer(ctx context.Context, language string, tie
 func (d *DockerClient) buildContainerConfig(rt config.RuntimeConfig, policy security.TierPolicy) *container.Config {
 	return &container.Config{
 		Image: rt.Image,
-		// Create workspace subdirectories then keep the container alive.
-		// Runs as root (default) to set up the tmpfs workspace, then exec
-		// commands run as the sandbox user (10001) via ExecOptions.User.
+		// CMD runs as root (Dockerfile USER is overridden by not setting User here).
+		// It creates workspace subdirs on the tmpfs mount and sets 0777 so the
+		// sandbox user (10001) can write to them via docker exec.
 		Cmd: []string{"sh", "-c",
 			"mkdir -p /workspace/code /workspace/input /workspace/output && " +
-				"chmod 755 /workspace/code /workspace/input /workspace/output && " +
+				"chmod 0777 /workspace /workspace/code /workspace/input /workspace/output && " +
 				"sleep infinity",
 		},
+		User:       "root", // CMD must run as root to set up tmpfs workspace dirs.
 		WorkingDir: "/workspace",
-		// NOTE: No User set here — init runs as root to create dirs on tmpfs.
-		// Exec commands set User: "10001:10001" individually.
+		// Code execution runs as sandbox user 10001 via ExecInContainer's User field.
 		Env: []string{
 			"HOME=/tmp",
 			"PYTHONDONTWRITEBYTECODE=1",
+			"PYTHONUNBUFFERED=1",
 			"NODE_ENV=production",
 		},
 		// Disable networking at config level for tier 1 and 2.
@@ -170,6 +171,9 @@ func (d *DockerClient) buildHostConfig(policy security.TierPolicy) *container.Ho
 
 	// Add tmpfs mounts for writable directories.
 	// tmpfs lives in memory and is automatically cleaned up when the container stops.
+	// Note: uid/gid options are not supported by Docker Desktop on macOS.
+	// Instead, we keep /workspace itself as a plain directory (from the image)
+	// and only mount subdirectories as tmpfs after the container CMD sets up perms.
 	for _, mountPath := range policy.TmpfsMounts {
 		sizeBytes := int64(policy.TmpfsSizeMB) * 1024 * 1024
 		hc.Mounts = append(hc.Mounts, mount.Mount{
@@ -177,7 +181,7 @@ func (d *DockerClient) buildHostConfig(policy security.TierPolicy) *container.Ho
 			Target: mountPath,
 			TmpfsOptions: &mount.TmpfsOptions{
 				SizeBytes: sizeBytes,
-				Mode:      0755,
+				Mode:      0777, // World-writable so sandbox user can write after mount.
 			},
 		})
 	}
@@ -362,6 +366,46 @@ func (d *DockerClient) ExecInContainer(ctx context.Context, containerID string, 
 	inspectResp, err := d.cli.ContainerExecInspect(ctx, execResp.ID)
 	if err != nil {
 		return nil, fmt.Errorf("inspecting exec result: %w", err)
+	}
+
+	return &ExecResult{
+		ExitCode: inspectResp.ExitCode,
+		Stdout:   stdoutBuf.String(),
+		Stderr:   stderrBuf.String(),
+	}, nil
+}
+
+// ExecAsRoot runs a command inside the container as root.
+// Used for privileged setup operations like writing files to tmpfs directories.
+func (d *DockerClient) ExecAsRoot(ctx context.Context, containerID string, cmd []string) (*ExecResult, error) {
+	execCfg := container.ExecOptions{
+		Cmd:          cmd,
+		AttachStdout: true,
+		AttachStderr: true,
+		WorkingDir:   "/workspace",
+		User:         "root",
+	}
+
+	execResp, err := d.cli.ContainerExecCreate(ctx, containerID, execCfg)
+	if err != nil {
+		return nil, fmt.Errorf("creating root exec in container %s: %w", containerID[:12], err)
+	}
+
+	attachResp, err := d.cli.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("attaching to root exec in container %s: %w", containerID[:12], err)
+	}
+	defer attachResp.Close()
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+	_, err = stdcopy.StdCopy(&stdoutBuf, &stderrBuf, attachResp.Reader)
+	if err != nil && ctx.Err() == nil {
+		return nil, fmt.Errorf("reading root exec output: %w", err)
+	}
+
+	inspectResp, err := d.cli.ContainerExecInspect(ctx, execResp.ID)
+	if err != nil {
+		return nil, fmt.Errorf("inspecting root exec result: %w", err)
 	}
 
 	return &ExecResult{
