@@ -3,9 +3,10 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { QueryFailedError, Repository } from 'typeorm';
 import { Skill, SkillCategory, SkillStatus } from './skill.entity';
 import { SkillVersion } from './skill-version.entity';
 import { CreateSkillDto } from './dto/create-skill.dto';
@@ -45,43 +46,67 @@ export class SkillsService {
 
   async create(dto: CreateSkillDto, authorId: string): Promise<Skill> {
     let parsedMetadata: Record<string, unknown> = {};
-    let slug = dto.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    let baseSlug = dto.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
     // If skillMd is provided, parse the YAML front matter.
     if (dto.skillMd) {
       parsedMetadata = this.parseSkillMdMetadata(dto.skillMd);
       if ((parsedMetadata as any).name) {
-        slug = String((parsedMetadata as any).name)
+        baseSlug = String((parsedMetadata as any).name)
           .toLowerCase()
           .replace(/[^a-z0-9]+/g, '-')
           .replace(/^-|-$/g, '');
       }
     }
 
-    // Ensure slug uniqueness.
-    slug = await this.ensureUniqueSlug(slug);
+    // Use optimistic insert with DB unique constraint as the authority.
+    // This avoids the check-then-act race condition of the previous polling loop:
+    // two concurrent requests could both pass the findOne check and then collide on insert.
+    // Instead, we attempt to save with the base slug and only append a suffix on conflict.
+    const MAX_SLUG_RETRIES = 5;
+    let lastError: Error | undefined;
 
-    const skill = this.skillRepo.create({
-      slug,
-      name: dto.name,
-      description: dto.description,
-      category: dto.category,
-      tags: dto.tags || [],
-      authorId,
-      status: dto.isPublic ? 'published' : 'draft',
-      metadataJson: parsedMetadata,
-      skillMd: dto.skillMd || undefined,
-      version: '1.0.0',
-    });
+    for (let attempt = 0; attempt <= MAX_SLUG_RETRIES; attempt++) {
+      const slug = attempt === 0 ? baseSlug : `${baseSlug}-${uuidv4().slice(0, 6)}`;
 
-    const saved = await this.skillRepo.save(skill);
+      const skill = this.skillRepo.create({
+        slug,
+        name: dto.name,
+        description: dto.description,
+        category: dto.category,
+        tags: dto.tags || [],
+        authorId,
+        status: dto.isPublic ? 'published' : 'draft',
+        metadataJson: parsedMetadata,
+        skillMd: dto.skillMd || undefined,
+        version: '1.0.0',
+      });
 
-    // Create initial version history entry if skillMd provided.
-    if (dto.skillMd) {
-      await this.saveVersion(saved.id, '1.0.0', dto.skillMd, 'Initial version');
+      try {
+        const saved = await this.skillRepo.save(skill);
+
+        // Create initial version history entry if skillMd provided.
+        if (dto.skillMd) {
+          await this.saveVersion(saved.id, '1.0.0', dto.skillMd, 'Initial version');
+        }
+
+        return saved;
+      } catch (err) {
+        // PostgreSQL unique_violation error code: 23505
+        const isUniqueViolation =
+          err instanceof QueryFailedError &&
+          (err as any).code === '23505' &&
+          ((err as any).detail ?? '').includes('slug');
+
+        if (!isUniqueViolation) throw err;
+        lastError = err as Error;
+        // Continue loop to retry with a new suffix.
+      }
     }
 
-    return saved;
+    throw new ConflictException(
+      `Could not generate a unique slug for "${dto.name}" after ${MAX_SLUG_RETRIES} retries: ${lastError?.message}`,
+    );
   }
 
   async findAll(params: {
@@ -222,17 +247,9 @@ export class SkillsService {
     }
   }
 
-  private async ensureUniqueSlug(baseSlug: string): Promise<string> {
-    let slug = baseSlug;
-    let counter = 0;
-
-    while (true) {
-      const existing = await this.skillRepo.findOne({ where: { slug } });
-      if (!existing) return slug;
-      counter++;
-      slug = `${baseSlug}-${counter}`;
-    }
-  }
+  // ensureUniqueSlug() has been removed.
+  // Slug uniqueness is now handled by the optimistic-insert-with-retry pattern in create().
+  // The database unique constraint on the slug column is the authoritative source of truth.
 
   private async saveVersion(
     skillId: string,

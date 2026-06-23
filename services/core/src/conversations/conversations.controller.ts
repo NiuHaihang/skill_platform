@@ -1,12 +1,14 @@
 import {
-  Controller, Get, Post, Body, Param, Res, Delete, Patch, UseGuards, Request, HttpStatus, HttpCode,
+  Controller, Get, Post, Body, Param, Res, Delete, Patch, UseGuards, Request,
+  HttpStatus, HttpCode, Query,
 } from '@nestjs/common';
-import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ConversationsService } from './conversations.service';
-import { IsString, IsNotEmpty, MaxLength, IsOptional } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import { IsString, IsNotEmpty, MaxLength, IsOptional, IsInt, Min, Max } from 'class-validator';
+import { Type } from 'class-transformer';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 class CreateConversationDto {
   @ApiProperty()
@@ -51,10 +53,21 @@ export class ConversationsController {
     return this.conversationsService.getConversations(req.user.id);
   }
 
-  @ApiOperation({ summary: 'Get messages in a conversation' })
+  @ApiOperation({ summary: 'Get messages in a conversation (cursor-paginated)' })
+  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Max messages to return (default 50, max 200)' })
+  @ApiQuery({ name: 'before', required: false, type: String, description: 'Return messages older than this message ID (cursor)' })
   @Get(':id/messages')
-  async getMessages(@Param('id') id: string, @Request() req: any) {
-    return this.conversationsService.getMessages(id, req.user.id);
+  async getMessages(
+    @Param('id') id: string,
+    @Request() req: any,
+    @Query('limit') limit?: string,
+    @Query('before') before?: string,
+  ) {
+    const parsedLimit = limit ? Math.min(parseInt(limit, 10) || 50, 200) : 50;
+    return this.conversationsService.getMessages(id, req.user.id, {
+      limit: parsedLimit,
+      before,
+    });
   }
 
   @ApiOperation({ summary: 'Send a message and receive streamed response (SSE)',

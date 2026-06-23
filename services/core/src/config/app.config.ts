@@ -5,10 +5,13 @@ export default registerAs('app', () => ({
   port: parseInt(process.env.PORT || '3001', 10),
 
   // JWT
+  // IMPORTANT: These values MUST be set via environment variables in production.
+  // main.ts startup guard will reject the app if JWT_SECRET is weak or missing in production.
+  // For local dev, set them in .env.local (use: openssl rand -hex 64).
   jwt: {
-    secret: process.env.JWT_SECRET || 'CHANGE_ME_IN_PRODUCTION',
+    secret: process.env.JWT_SECRET ?? '',
     expiresIn: process.env.JWT_EXPIRES_IN || '15m',
-    refreshSecret: process.env.JWT_REFRESH_SECRET || 'CHANGE_ME_REFRESH_IN_PRODUCTION',
+    refreshSecret: process.env.JWT_REFRESH_SECRET ?? '',
     refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
   },
 

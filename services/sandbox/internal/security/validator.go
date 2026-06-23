@@ -24,8 +24,10 @@ type ValidationResult struct {
 	Error string
 }
 
-// MaxCodeSizeBytes is the maximum code size allowed (1 MB).
-const MaxCodeSizeBytes = 1 * 1024 * 1024
+// MaxCodeSize is the maximum code size allowed (1 MB).
+// NOTE: This value must stay in sync with executor.MaxCodeSize in executor/result.go.
+// Both constants define the same limit for validation in different packages (security vs executor).
+const MaxCodeSize = 1 * 1024 * 1024
 
 // dangerousPattern pairs a regex with a human-readable description.
 type dangerousPattern struct {
@@ -69,9 +71,9 @@ func ValidateCode(code string, language string) ValidationResult {
 	result := ValidationResult{Valid: true}
 
 	// Hard check: code size limit.
-	if len(code) > MaxCodeSizeBytes {
+	if len(code) > MaxCodeSize {
 		result.Valid = false
-		result.Error = fmt.Sprintf("code size %d bytes exceeds maximum %d bytes", len(code), MaxCodeSizeBytes)
+		result.Error = fmt.Sprintf("code size %d bytes exceeds maximum %d bytes", len(code), MaxCodeSize)
 		return result
 	}
 

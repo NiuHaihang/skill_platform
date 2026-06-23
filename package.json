@@ -15,7 +15,7 @@
     "infra:down": "docker compose down",
     "infra:logs": "docker compose logs -f postgres redis minio",
     "sandbox:build": "cd services/sandbox && go build -o ../../.bin/sandbox ./cmd/sandbox/",
-    "sandbox:dev": "dotenv -e .env.local -- sh -c 'SANDBOX_SERVER_PORT=8194 SANDBOX_SERVER_API_KEY=${SANDBOX_API_KEY:-sk-sandbox-dev} .bin/sandbox'"
+    "sandbox:dev": "dotenv -e .env.local -- sh -c 'SANDBOX_SERVER_PORT=8194 SANDBOX_SERVER_API_KEY=${SANDBOX_API_KEY:-sk-sandbox-dev} .bin/sandbox'",
     "build": "turbo run build",
     "test": "turbo run test",
     "lint": "turbo run lint",

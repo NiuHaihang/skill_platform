@@ -70,12 +70,33 @@ export class ConversationsService {
     await this.conversationRepo.remove(conv);
   }
 
-  async getMessages(conversationId: string, userId: string): Promise<Message[]> {
+  async getMessages(
+    conversationId: string,
+    userId: string,
+    options: { limit?: number; before?: string } = {},
+  ): Promise<{ data: Message[]; hasMore: boolean }> {
     const conv = await this.getConversationOrThrow(conversationId, userId);
-    return this.messageRepo.find({
-      where: { conversationId: conv.id },
-      order: { createdAt: 'ASC' },
-    });
+    const limit = Math.min(options.limit ?? 50, 200); // cap at 200
+
+    const qb = this.messageRepo
+      .createQueryBuilder('msg')
+      .where('msg.conversation_id = :id', { id: conv.id })
+      .orderBy('msg.created_at', 'DESC')
+      .take(limit + 1); // fetch one extra to know if there are more
+
+    // Cursor-based pagination: load messages older than the given message ID.
+    if (options.before) {
+      const cursor = await this.messageRepo.findOne({ where: { id: options.before } });
+      if (cursor) {
+        qb.andWhere('msg.created_at < :cursor', { cursor: cursor.createdAt });
+      }
+    }
+
+    const rows = await qb.getMany();
+    const hasMore = rows.length > limit;
+    const data = rows.slice(0, limit).reverse(); // return in chronological order
+
+    return { data, hasMore };
   }
 
   // ─────────────────────────────────────────────
@@ -611,6 +632,9 @@ ${skillList}
       role,
       content,
       toolCalls: extras?.toolCalls,
+      // Store toolCallId in toolResults so buildLlmMessages() can reconstruct
+      // multi-turn tool histories without the "orphaned tool message" warning.
+      toolResults: extras?.toolCallId ? [{ toolCallId: extras.toolCallId }] : undefined,
       promptTokens: extras?.promptTokens,
       completionTokens: extras?.completionTokens,
       modelUsed: extras?.modelUsed,
