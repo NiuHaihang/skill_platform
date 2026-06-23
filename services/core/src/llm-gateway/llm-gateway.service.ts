@@ -238,6 +238,11 @@ export class LlmGatewayService {
     const toolCallAcc: Record<number, { id: string; name: string; arguments: string }> = {};
     let pendingUsage: LlmResponse['usage'] | undefined;
 
+    // Buffer for accumulating DSML content across multiple chunks.
+    // DeepSeek sometimes streams DSML tool calls via delta.content instead of delta.tool_calls.
+    let dsmlBuffer = '';
+    let dsmlCapturing = false;
+
     for await (const chunk of response.data) {
       buffer += (chunk as Buffer).toString();
       const lines = buffer.split('\n');
@@ -247,6 +252,10 @@ export class LlmGatewayService {
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6).trim();
         if (data === '[DONE]') {
+          // If we were capturing a DSML block that never completed, try to parse it.
+          if (dsmlBuffer.trim()) {
+            this.parseDsmlToolCalls(dsmlBuffer, toolCallAcc);
+          }
           yield { delta: '', done: true, usage: pendingUsage };
           return;
         }
@@ -291,7 +300,56 @@ export class LlmGatewayService {
           }
 
           if (delta.content) {
-            yield { delta: delta.content, done: false };
+            const content: string = delta.content;
+
+            // Detect DeepSeek DSML tool_calls in content stream.
+            // DeepSeek sometimes emits function calls as DSML text instead of delta.tool_calls.
+            if (dsmlCapturing || content.includes('<｜｜DSML｜｜tool_calls>') || content.includes('<|DSML|>') || dsmlBuffer.length > 0) {
+              dsmlBuffer += content;
+
+              // Check if we've started capturing DSML.
+              if (!dsmlCapturing && dsmlBuffer.includes('<｜｜DSML｜｜tool_calls>')) {
+                dsmlCapturing = true;
+                // Extract any text before the DSML block and yield it.
+                const dsmlStart = dsmlBuffer.indexOf('<｜｜DSML｜｜tool_calls>');
+                const textBefore = dsmlBuffer.slice(0, dsmlStart).trim();
+                if (textBefore) {
+                  yield { delta: textBefore, done: false };
+                }
+                dsmlBuffer = dsmlBuffer.slice(dsmlStart);
+              }
+
+              // Check if the DSML block is complete.
+              if (dsmlCapturing && dsmlBuffer.includes('</｜｜DSML｜｜tool_calls>')) {
+                // Extract the complete DSML block and parse it.
+                const endTag = '</｜｜DSML｜｜tool_calls>';
+                const endIdx = dsmlBuffer.indexOf(endTag) + endTag.length;
+                const dsmlBlock = dsmlBuffer.slice(0, endIdx);
+                const remainder = dsmlBuffer.slice(endIdx);
+
+                // Parse the DSML block into standard tool call deltas.
+                const parsedCalls = this.parseDsmlToolCalls(dsmlBlock, toolCallAcc);
+                for (const tc of parsedCalls) {
+                  yield {
+                    delta: '',
+                    toolCallDelta: { index: tc.index, id: tc.id, name: tc.name, arguments: tc.arguments },
+                    done: false,
+                  };
+                }
+
+                dsmlBuffer = '';
+                dsmlCapturing = false;
+
+                // Yield any text after the DSML block.
+                if (remainder.trim()) {
+                  yield { delta: remainder, done: false };
+                }
+              }
+              // Still accumulating — don't yield anything yet.
+            } else {
+              // Normal text content — yield it directly.
+              yield { delta: content, done: false };
+            }
           }
         } catch {
           // Skip malformed SSE chunks.
@@ -299,6 +357,48 @@ export class LlmGatewayService {
       }
     }
   }
+
+  /**
+   * Parse a DeepSeek DSML tool_calls block into standard tool call objects.
+   * Format: <｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="fn"><｜｜DSML｜｜parameter name="p" string="true">val</｜｜DSML｜｜parameter></｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>
+   *
+   * Returns an array of parsed tool calls with index, id, name, arguments.
+   */
+  private parseDsmlToolCalls(
+    dsml: string,
+    acc: Record<number, { id: string; name: string; arguments: string }>,
+  ): Array<{ index: number; id: string; name: string; arguments: string }> {
+    const results: Array<{ index: number; id: string; name: string; arguments: string }> = [];
+
+    // Match each <invoke> block.
+    const invokeRegex = /<｜｜DSML｜｜invoke\s+name="([^"]+)">([\s\S]*?)<\/｜｜DSML｜｜invoke>/g;
+    let match: RegExpExecArray | null;
+    let idx = Object.keys(acc).length; // Continue index after existing tool calls.
+
+    while ((match = invokeRegex.exec(dsml)) !== null) {
+      const funcName = match[1];
+      const body = match[2];
+
+      // Parse parameters into a JSON object.
+      const params: Record<string, unknown> = {};
+      const paramRegex = /<｜｜DSML｜｜parameter\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/｜｜DSML｜｜parameter>/g;
+      let paramMatch: RegExpExecArray | null;
+
+      while ((paramMatch = paramRegex.exec(body)) !== null) {
+        params[paramMatch[1]] = paramMatch[2].trim();
+      }
+
+      const argsStr = JSON.stringify(params);
+      const id = `dsml_tc_${Date.now()}_${idx}`;
+
+      acc[idx] = { id, name: funcName, arguments: argsStr };
+      results.push({ index: idx, id, name: funcName, arguments: argsStr });
+      idx++;
+    }
+
+    return results;
+  }
+
 
   // ─────────────────────────────────────────────
   // Anthropic
