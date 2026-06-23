@@ -143,7 +143,9 @@ function ChatContent() {
     setMessagesLoading(true);
     api.get(`/v1/conversations/${conversationId}/messages`)
       .then((r) => {
-        const loaded = r.data.filter((m: any) => m.role !== 'tool').map((m: any) => ({
+        // Backend now returns { data: Message[], hasMore: boolean }
+        const rawMessages = Array.isArray(r.data) ? r.data : (r.data?.data ?? []);
+        const loaded = rawMessages.filter((m: any) => m.role !== 'tool').map((m: any) => ({
           id: m.id,
           role: m.role,
           content: m.content,
