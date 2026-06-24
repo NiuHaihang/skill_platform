@@ -11,6 +11,7 @@ import api from '@/lib/api';
 import { cn } from '@/lib/utils';
 import Cookies from 'js-cookie';
 import toast from 'react-hot-toast';
+import { MarkdownRenderer } from '@/components/markdown-renderer';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
 
@@ -471,7 +472,7 @@ function ChatContent() {
                 )}
                 {streamingContent ? (
                   <div className="chat-assistant">
-                    <p className="whitespace-pre-wrap">{cleanContent(streamingContent)}</p>
+                    <MarkdownRenderer content={cleanContent(streamingContent)} />
                     <span className="inline-block w-0.5 h-4 bg-brand-400 ml-0.5 animate-typing align-middle" />
                   </div>
                 ) : (
@@ -642,9 +643,11 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         {isUser ? <User className="w-4 h-4 text-muted-foreground" /> : <Bot className="w-4 h-4 text-white" />}
       </div>
       <div className={cn('max-w-[75%]', isUser ? 'chat-user' : 'chat-assistant')}>
-        <p className="whitespace-pre-wrap leading-relaxed">
-          {isUser ? message.content : cleanContent(message.content)}
-        </p>
+        {isUser ? (
+          <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
+        ) : (
+          <MarkdownRenderer content={cleanContent(message.content)} />
+        )}
       </div>
     </div>
   );
