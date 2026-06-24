@@ -9,6 +9,10 @@ export interface SandboxExecutionRequest {
   tier?: 1 | 2 | 3;
   files?: Record<string, string>;  // filename -> base64 content
   env?: Record<string, string>;
+  /** JSON data piped to the process's stdin. Skills receive arguments here. */
+  stdin?: string;
+  /** CLI arguments appended after the code file (e.g., the query string). */
+  args?: string[];
 }
 
 export interface SandboxExecutionResult {
@@ -51,7 +55,7 @@ export class SandboxService {
 
   /**
    * Execute code in the sandbox service.
-   * This is the primary method called from ConversationsService.
+   * This is the primary method called from SkillExecutorService.
    */
   async execute(req: SandboxExecutionRequest): Promise<SandboxExecutionResult> {
     this.logger.debug(`Executing ${req.language} code, tier=${req.tier ?? 2}`);
@@ -66,6 +70,8 @@ export class SandboxService {
           tier: req.tier ?? 2,
           files: req.files ?? {},
           env: req.env ?? {},
+          stdin: req.stdin,
+          args: req.args,
         },
       );
 

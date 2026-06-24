@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -228,16 +229,58 @@ func (e *Executor) Execute(ctx context.Context, req *ExecutionRequest) *Executio
 		return result
 	}
 
-	// Step 7: Build the execution command.
-	cmd := e.buildCommand(req.Language, "/workspace/code/"+codeFileName)
+	// Step 7: Write stdin data to /workspace/input/_stdin.json if provided.
+	if req.Stdin != "" {
+		stdinB64 := base64.StdEncoding.EncodeToString([]byte(req.Stdin))
+		writeStdinCmd := []string{"sh", "-c",
+			fmt.Sprintf("echo %s | base64 -d > /workspace/input/_stdin.json", stdinB64),
+		}
+		stdinResult, stdinErr := e.docker.ExecAsRoot(execCtx, container.ID, writeStdinCmd)
+		if stdinErr != nil || (stdinResult != nil && stdinResult.ExitCode != 0) {
+			e.logger.Warn("failed to write stdin file",
+				"execution_id", execID,
+				"error", stdinErr,
+			)
+			// Non-fatal: skill may not need stdin.
+		}
+	}
+
+	// Step 8: Build the execution command.
+	baseCmd := e.buildCommand(req.Language, "/workspace/code/"+codeFileName)
+
+	// Append user-provided arguments.
+	if len(req.Args) > 0 {
+		baseCmd = append(baseCmd, req.Args...)
+	}
+
+	// If stdin data is provided, wrap the command to pipe it.
+	var cmd []string
+	if req.Stdin != "" {
+		// Wrap: cat /workspace/input/_stdin.json | <original command>
+		cmdStr := strings.Join(baseCmd, " ")
+		for i, arg := range req.Args {
+			// Re-quote args that contain spaces for the shell wrapper.
+			if strings.ContainsAny(arg, " \t\n") {
+				baseCmd[len(baseCmd)-len(req.Args)+i] = fmt.Sprintf("%q", arg)
+			}
+		}
+		cmdStr = strings.Join(baseCmd, " ")
+		cmd = []string{"sh", "-c", fmt.Sprintf("cat /workspace/input/_stdin.json | %s", cmdStr)}
+	} else {
+		cmd = baseCmd
+	}
 
 	// Build environment variables.
 	var env []string
 	for k, v := range req.Environment {
 		env = append(env, fmt.Sprintf("%s=%s", k, v))
 	}
+	// Always set SKILL_INPUT_FILE so skills can find the stdin data file.
+	if req.Stdin != "" {
+		env = append(env, "SKILL_INPUT_FILE=/workspace/input/_stdin.json")
+	}
 
-	// Step 8: Execute the code inside the container.
+	// Step 9: Execute the code inside the container.
 	execResult, err := e.docker.ExecInContainer(execCtx, container.ID, cmd, env)
 	if err != nil {
 		// Check if it was a timeout.
@@ -260,12 +303,12 @@ func (e *Executor) Execute(ctx context.Context, req *ExecutionRequest) *Executio
 		return result
 	}
 
-	// Step 9: Populate stdout/stderr and exit code.
+	// Step 10: Populate stdout/stderr and exit code.
 	result.ExitCode = execResult.ExitCode
 	result.Stdout = execResult.Stdout
 	result.Stderr = execResult.Stderr
 
-	// Step 10: Extract output files from /workspace/output/.
+	// Step 11: Extract output files from /workspace/output/.
 	outputFiles, err := e.docker.CopyFromContainer(execCtx, container.ID, "/workspace/output/")
 	if err != nil {
 		e.logger.Warn("failed to extract output files",
@@ -277,7 +320,7 @@ func (e *Executor) Execute(ctx context.Context, req *ExecutionRequest) *Executio
 		result.OutputFiles = EncodeFilesToBase64(outputFiles)
 	}
 
-	// Step 11: Collect resource usage.
+	// Step 12: Collect resource usage.
 	duration := time.Since(startTime)
 	result.ResourceUsage = &ResourceUsage{
 		DurationMs: duration.Milliseconds(),

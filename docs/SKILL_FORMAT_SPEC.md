@@ -214,3 +214,82 @@ name-version.skill (ZIP)
 | `translation` | 翻译 | 多语言翻译 |
 | `research` | 研究 | 学术/行业研究 |
 | `automation` | 自动化 | 流程自动化 |
+
+---
+
+## 7. Skill 输入输出规范（I/O Contract）
+
+> 所有可执行 Skill 必须遵循此 I/O 规范，才能被 SkillForge 执行引擎正确调用。
+
+### 7.1 输入通道
+
+当 LLM 调用一个 Skill 时，执行引擎通过以下 **三个标准通道** 传递参数：
+
+| 通道 | 数据格式 | 说明 |
+|------|----------|------|
+| `stdin` | JSON 对象 | 包含 LLM 传入的所有参数（如 `{"query": "sqrt(144)"}`) |
+| `sys.argv[1]` / `process.argv[2]` | 字符串 | 主查询字符串（`query` 或 `input` 字段的值） |
+| 环境变量 `SKILL_INPUT_FILE` | 文件路径 | stdin 数据的文件路径（`/workspace/input/_stdin.json`） |
+
+### 7.2 Python Skill 模板
+
+```python
+import sys, json
+
+# 方式 1（推荐）：从 stdin 读取 JSON
+data = json.loads(sys.stdin.read())
+query = data.get("query", "")
+
+# 方式 2：从命令行参数读取
+# query = sys.argv[1] if len(sys.argv) > 1 else ""
+
+# 方式 3：兼容两种方式
+query = sys.argv[1] if len(sys.argv) > 1 else ""
+if not query:
+    try:
+        data = json.loads(sys.stdin.read())
+        query = data.get("query", data.get("input", ""))
+    except Exception:
+        pass
+
+# 执行逻辑
+result = {"query": query, "result": "..."}
+
+# 输出必须是 JSON 格式的 stdout
+print(json.dumps(result))
+```
+
+### 7.3 JavaScript Skill 模板
+
+```javascript
+const readline = require('readline');
+
+// 方式 1（推荐）：从 stdin 读取 JSON
+let input = '';
+process.stdin.on('data', chunk => input += chunk);
+process.stdin.on('end', () => {
+  const data = JSON.parse(input);
+  const query = data.query || '';
+  
+  // 执行逻辑
+  const result = { query, result: '...' };
+  console.log(JSON.stringify(result));
+});
+
+// 方式 2：从命令行参数读取
+// const query = process.argv[2] || '';
+```
+
+### 7.4 输出规范
+
+- Skill 的**主要输出**通过 `stdout` 返回，格式为 **JSON 字符串**
+- `stderr` 用于错误信息和诊断日志
+- 退出码 `0` 表示成功，非零表示失败
+- 输出文件放在 `/workspace/output/` 目录
+
+### 7.5 安全提示
+
+- Skill 代码运行在隔离的 Docker 容器中（非 root 用户 `10001`）
+- 根据 Tier 级别，网络访问可能被禁用
+- 不要依赖文件系统持久化（容器是临时的）
+- 最大代码体积：1MB，执行超时：由 Tier 配置决定

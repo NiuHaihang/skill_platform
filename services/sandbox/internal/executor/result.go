@@ -41,6 +41,15 @@ type ExecutionRequest struct {
 	// Environment is an optional map of environment variables to set during execution.
 	Environment map[string]string `json:"environment,omitempty"`
 
+	// Stdin is optional data that will be written to /workspace/input/_stdin.json
+	// and piped to the process's stdin. Skills receive their arguments through
+	// this channel (typically a JSON object with query/input fields).
+	Stdin string `json:"stdin,omitempty"`
+
+	// Args are additional command-line arguments appended after the code file path.
+	// For example, Args=["sqrt(144)"] results in: python code.py "sqrt(144)"
+	Args []string `json:"args,omitempty"`
+
 	// Tier is the security tier (1-3) controlling resource limits and permissions.
 	Tier int `json:"tier"`
 

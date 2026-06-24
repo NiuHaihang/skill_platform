@@ -7,7 +7,7 @@ import { ConversationsController } from './conversations.controller';
 import { AgentsModule } from '../agents/agents.module';
 import { SkillsModule } from '../skills/skills.module';
 import { LlmGatewayModule } from '../llm-gateway/llm-gateway.module';
-import { SandboxModule } from '../sandbox/sandbox.module';
+import { SkillExecutorModule } from '../skill-executor/skill-executor.module';
 
 @Module({
   imports: [
@@ -15,7 +15,7 @@ import { SandboxModule } from '../sandbox/sandbox.module';
     AgentsModule,
     SkillsModule,
     LlmGatewayModule,
-    SandboxModule,
+    SkillExecutorModule,
   ],
   controllers: [ConversationsController],
   providers: [ConversationsService],

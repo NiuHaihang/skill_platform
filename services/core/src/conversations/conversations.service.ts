@@ -6,7 +6,7 @@ import { Message, MessageRole } from './message.entity';
 import { AgentsService } from '../agents/agents.service';
 import { SkillsService } from '../skills/skills.service';
 import { LlmGatewayService, LlmMessage, LlmTool } from '../llm-gateway/llm-gateway.service';
-import { SandboxService } from '../sandbox/sandbox.service';
+import { SkillExecutorService } from '../skill-executor/skill-executor.service';
 import { Agent } from '../agents/agent.entity';
 
 export type ConversationSSEEvent =
@@ -29,7 +29,7 @@ export class ConversationsService {
     private readonly agentsService: AgentsService,
     private readonly skillsService: SkillsService,
     private readonly llmGateway: LlmGatewayService,
-    private readonly sandboxService: SandboxService,
+    private readonly skillExecutor: SkillExecutorService,
   ) {}
 
   // ─────────────────────────────────────────────
@@ -211,7 +211,7 @@ export class ConversationsService {
         for (const toolCall of pendingToolCalls) {
           const skillSlug = toolCall.function.name.replace(/_/g, '-');
 
-          let args: { language?: string; files?: Record<string, string> };
+          let args: Record<string, unknown>;
           try {
             args = JSON.parse(toolCall.function.arguments || '{}');
           } catch {
@@ -224,90 +224,23 @@ export class ConversationsService {
             continue;
           }
 
+          const language = ((args.language as string) || 'python') as 'python' | 'javascript';
+
           yield {
             event: 'tool_use',
             data: {
               toolCallId: toolCall.id,
               skillSlug,
-              language: args.language || 'python',
+              language,
             },
           };
 
-          // Load L2 spec and extract executable code.
-          const skillFull = await this.skillsService.findBySlugL2(skillSlug);
-          if (!skillFull?.skillMd?.trim()) {
-            const failure = { stdout: '', stderr: `Skill '${skillSlug}' has no implementation code (skillMd is empty). Please add code to the skill.`, exitCode: 1 };
-            toolResults.set(toolCall.id, failure);
-            yield {
-              event: 'tool_result',
-              data: { toolCallId: toolCall.id, ...failure },
-            };
-            continue;
-          }
-
-          const rawCode = this.extractCodeFromSkillMd(skillFull.skillMd, args.language || 'python');
-
-          // If no executable code block, generate a minimal wrapper that outputs
-          // the query so the LLM can use its own knowledge to fulfill the request.
-          // This gracefully handles CLI-based skills that don't have inline Python code.
-          let code = rawCode;
-          if (!code.trim()) {
-            const query = (args as any).query || (args as any).input || '';
-            if (!query.trim()) {
-              const failure = {
-                stdout: '',
-                stderr: `Skill '${skillSlug}' requires a 'query' argument but none was provided.`,
-                exitCode: 1,
-              };
-              toolResults.set(toolCall.id, failure);
-              yield { event: 'tool_result', data: { toolCallId: toolCall.id, ...failure } };
-              continue;
-            }
-            // Generate a wrapper that prints the query context; the LLM will
-            // synthesize an answer from its own knowledge using this structure.
-            code = `import json, sys\nquery = ${JSON.stringify(query)}\nprint(json.dumps({"query": query, "status": "no_code", "message": "Skill '${skillSlug}' has no executable code. Using LLM knowledge to answer: " + query}))\n`;
-          } else {
-            // ── Inject tool-call arguments into the skill code ──
-            // Skills expect input via sys.argv[1] or stdin JSON, but the
-            // sandbox executes code without arguments. We prepend a preamble
-            // that sets sys.argv and patches sys.stdin so the skill code can
-            // read the query through its normal input channels.
-            const toolArgs = { ...args } as Record<string, unknown>;
-            // Remove 'language' as it's a meta param, not a skill input.
-            delete toolArgs.language;
-            delete toolArgs.files;
-            const query = (toolArgs.query || toolArgs.input || '') as string;
-            const argsJson = JSON.stringify(toolArgs);
-
-            const lang = args.language || 'python';
-            if (lang === 'python') {
-              const preamble = [
-                `import sys as _sys, io as _io`,
-                `_sys.argv = ['skill.py', ${JSON.stringify(query)}]`,
-                `_sys.stdin = _io.StringIO(${JSON.stringify(argsJson)})`,
-                ``,
-              ].join('\n');
-              code = preamble + code;
-            } else {
-              // JavaScript: inject via global variables
-              const preamble = [
-                `globalThis.__SKILL_ARGS = ${JSON.stringify(argsJson)};`,
-                `globalThis.__SKILL_QUERY = ${JSON.stringify(query)};`,
-                `process.argv = ['node', 'skill.js', ${JSON.stringify(query)}];`,
-                ``,
-              ].join('\n');
-              code = preamble + code;
-            }
-          }
-
-          const tier = this.determineTier(skillFull);
-
-          const execResult = await this.sandboxService.execute({
-            language: (args.language || 'python') as 'python' | 'javascript',
-            code,
-            tier,
-            files: args.files,
-          });
+          // Delegate to SkillExecutorService (standardized I/O contract).
+          const execResult = await this.skillExecutor.executeSkill(
+            skillSlug,
+            args,
+            language,
+          );
 
           toolResults.set(toolCall.id, {
             stdout: execResult.stdout,
@@ -682,20 +615,8 @@ ${skillList}
       .replace(/<｜｜[^｜]*｜｜>/g, '');
   }
 
-  private extractCodeFromSkillMd(skillMd: string, language: string): string {
-    // Extract code from the first matching code block.
-    const langPattern = language === 'python' ? /```python\n([\s\S]*?)```/
-                                               : /```(?:javascript|js)\n([\s\S]*?)```/;
-    const match = skillMd.match(langPattern);
-    return match ? match[1] : '';
-  }
-
-  private determineTier(skill: any): 1 | 2 | 3 {
-    const capabilities = skill.metadataJson?.capabilities as any;
-    if (capabilities?.requiresNetwork) return 3;
-    if (capabilities?.requiresFileAccess) return 2;
-    return 1;
-  }
+  // extractCodeFromSkillMd and determineTier have been moved to
+  // SkillExecutorService as part of the execution pipeline refactor.
 
   private async saveMessage(
     conversationId: string,
