@@ -266,6 +266,38 @@ export class ConversationsService {
             // Generate a wrapper that prints the query context; the LLM will
             // synthesize an answer from its own knowledge using this structure.
             code = `import json, sys\nquery = ${JSON.stringify(query)}\nprint(json.dumps({"query": query, "status": "no_code", "message": "Skill '${skillSlug}' has no executable code. Using LLM knowledge to answer: " + query}))\n`;
+          } else {
+            // ── Inject tool-call arguments into the skill code ──
+            // Skills expect input via sys.argv[1] or stdin JSON, but the
+            // sandbox executes code without arguments. We prepend a preamble
+            // that sets sys.argv and patches sys.stdin so the skill code can
+            // read the query through its normal input channels.
+            const toolArgs = { ...args } as Record<string, unknown>;
+            // Remove 'language' as it's a meta param, not a skill input.
+            delete toolArgs.language;
+            delete toolArgs.files;
+            const query = (toolArgs.query || toolArgs.input || '') as string;
+            const argsJson = JSON.stringify(toolArgs);
+
+            const lang = args.language || 'python';
+            if (lang === 'python') {
+              const preamble = [
+                `import sys as _sys, io as _io`,
+                `_sys.argv = ['skill.py', ${JSON.stringify(query)}]`,
+                `_sys.stdin = _io.StringIO(${JSON.stringify(argsJson)})`,
+                ``,
+              ].join('\n');
+              code = preamble + code;
+            } else {
+              // JavaScript: inject via global variables
+              const preamble = [
+                `globalThis.__SKILL_ARGS = ${JSON.stringify(argsJson)};`,
+                `globalThis.__SKILL_QUERY = ${JSON.stringify(query)};`,
+                `process.argv = ['node', 'skill.js', ${JSON.stringify(query)}];`,
+                ``,
+              ].join('\n');
+              code = preamble + code;
+            }
           }
 
           const tier = this.determineTier(skillFull);
@@ -461,6 +493,11 @@ export class ConversationsService {
       return '🦙 Ollama 服务未启动，请运行 `ollama serve` 后重试。';
     }
 
+    // Bad request (invalid message format, unsupported parameters)
+    if (status === 400) {
+      return '⚠️ AI 模型请求格式错误（可能是对话历史中存在损坏的消息）。请尝试新建一个对话重试。';
+    }
+
     // Generic fallback
     return '😕 对话处理失败，请稍后重试。如果问题持续存在，请检查服务器日志。';
   }
@@ -537,6 +574,51 @@ ${skillList}
           content: this.cleanLlmContent(msg.content) ?? '',
           toolCallId,
         });
+      }
+    }
+
+    // ── Repair: ensure every assistant tool_call has a matching tool response ──
+    // DeepSeek (and OpenAI) require that every tool_call ID in an assistant
+    // message has a corresponding tool-role message. When orphaned tool messages
+    // were skipped above, the assistant's tool_calls array may reference IDs
+    // that no longer appear in the message list. We fix this by injecting
+    // synthetic placeholder tool responses for any missing IDs.
+    const presentToolIds = new Set(
+      messages.filter((m) => m.role === 'tool' && m.toolCallId).map((m) => m.toolCallId!),
+    );
+
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      if (m.role !== 'assistant' || !m.tool_calls?.length) continue;
+
+      const missingCalls = m.tool_calls.filter((tc) => !presentToolIds.has(tc.id));
+      if (missingCalls.length === 0) continue;
+
+      if (missingCalls.length === m.tool_calls.length) {
+        // ALL tool calls are orphaned — strip tool_calls entirely so the LLM
+        // doesn't see a broken conversation turn.
+        this.logger.warn(
+          { assistantMsgIndex: i, orphanedIds: missingCalls.map((tc) => tc.id) },
+          'Stripping all orphaned tool_calls from assistant message (no matching tool responses)',
+        );
+        delete m.tool_calls;
+      } else {
+        // Partial orphans — inject placeholder tool responses right after this
+        // assistant message so the LLM sees a complete tool-call / tool-response pair.
+        const placeholders: LlmMessage[] = missingCalls.map((tc) => ({
+          role: 'tool' as const,
+          content: JSON.stringify({ error: 'Tool result unavailable (previous execution lost)' }),
+          toolCallId: tc.id,
+        }));
+        // Insert right after the assistant message.
+        const insertIdx = i + 1;
+        messages.splice(insertIdx, 0, ...placeholders);
+        // Also register them so later passes don't double-fix.
+        for (const ph of placeholders) presentToolIds.add(ph.toolCallId!);
+        this.logger.warn(
+          { assistantMsgIndex: i, injectedIds: missingCalls.map((tc) => tc.id) },
+          'Injected placeholder tool responses for orphaned tool_calls',
+        );
       }
     }
 

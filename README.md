@@ -159,14 +159,28 @@ docker compose up -d postgres redis minio docker-socket-proxy
 ### 4. Start Services
 
 ```bash
-# Option A — Start all services via Turborepo (recommended)
+# ✅ Option A — One command to start everything (recommended)
+# Starts: Docker infra → Go sandbox → NestJS backend → Next.js frontend
+pnpm dev:all
+
+# ⚠️ Option B — Start only frontend + backend (NO sandbox)
+# Use this if you don't need Skill code execution (chat/sandbox features will fail)
 pnpm dev
 
-# Option B — Start services individually
+# Option C — Start services individually
 pnpm --filter @skillforge/core dev       # NestJS on :3001
 pnpm --filter @skillforge/web dev        # Next.js on :3000
-cd services/sandbox && go run ./cmd/...  # Go sandbox on :8194
+# Sandbox must be started separately (requires Go):
+SANDBOX_SERVER_PORT=8194 \
+SANDBOX_SERVER_API_KEY=sk-sandbox-dev-CHANGE_ME \
+SANDBOX_DOCKER_HOST=tcp://localhost:2375 \
+.bin/sandbox
 ```
+
+> **💡 Note**: `pnpm dev` only starts the Turborepo-managed services (Next.js + NestJS).
+> The Go sandbox service is a separate process and will **not** start with `pnpm dev`.
+> If you see the error "🐳 代码沙箱服务暂时不可用", you need to start the sandbox service
+> separately or use `pnpm dev:all` instead.
 
 ### 5. Verify
 
